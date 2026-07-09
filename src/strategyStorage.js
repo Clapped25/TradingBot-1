@@ -1,28 +1,17 @@
-// Saved Strategies — persists what Claude extracted from each video so
-// you never have to re-paste a URL or pay for re-extraction. A single
-// saved strategy can be built from MULTIPLE videos: `sources` is an
-// array, one entry per video that contributed to it, while `strategy`
-// holds the single current combined rule set.
-// (The actual LEARNING data lives separately in tradeMemory.js, pooled
-// across every strategy — this file only stores the rule sets themselves.)
+// Saved Strategies — syncs with Supabase so strategies appear on all devices.
+// Falls back to localStorage if Supabase is unavailable.
 
-const STORAGE_KEY = 'tradingbot_saved_strategies_v2'
+import { sbGet, sbSet, sbDelete, sbGetAll } from './supabase'
 
-function loadAll() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
-  }
+const LOCAL_KEY  = 'tradingbot_saved_strategies_v2'
+const SB_TABLE   = 'strategies'
+
+// ── Local fallback ────────────────────────────────────────────────
+function loadLocal() {
+  try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || '[]') } catch { return [] }
 }
-
-function saveAll(strategies) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(strategies))
-  } catch {
-    // storage full or unavailable — saving just won't persist this session
-  }
+function saveLocal(strategies) {
+  try { localStorage.setItem(LOCAL_KEY, JSON.stringify(strategies)) } catch {}
 }
 
 function makeId(name) {
@@ -31,60 +20,78 @@ function makeId(name) {
 }
 
 function makeSource(source = {}) {
-  return {
-    youtubeUrl: source.youtubeUrl || '',
-    transcript: source.transcript || '',
-    notes: source.notes || '',
-    addedAt: Date.now(),
-  }
+  return { youtubeUrl: source.youtubeUrl || '', transcript: source.transcript || '', notes: source.notes || '', addedAt: Date.now() }
 }
 
-// ── Save a newly extracted strategy, with its source material ───
-export function saveStrategy(strategy, source = {}) {
-  const strategies = loadAll()
+// ── Save a newly extracted strategy ─────────────────────────────
+export async function saveStrategy(strategy, source = {}) {
   const record = {
-    id: makeId(strategy.name),
+    id:        makeId(strategy.name),
     strategy,
-    sources: [makeSource(source)],
+    sources:   [makeSource(source)],
     createdAt: Date.now(),
     updatedAt: Date.now(),
   }
-  strategies.push(record)
-  saveAll(strategies)
+
+  // Save locally first (instant)
+  const local = loadLocal()
+  local.push(record)
+  saveLocal(local)
+
+  // Sync to Supabase
+  try { await sbSet(SB_TABLE, record, record.id) } catch {}
+
   return record.id
 }
 
-// ── Update an existing saved strategy's rules (e.g. after AI feedback) ──
-export function updateStrategy(id, updatedStrategy) {
-  const strategies = loadAll()
-  const idx = strategies.findIndex(s => s.id === id)
+// ── Update strategy rules ────────────────────────────────────────
+export async function updateStrategy(id, updatedStrategy) {
+  const local = loadLocal()
+  const idx   = local.findIndex(s => s.id === id)
   if (idx === -1) return false
-  strategies[idx].strategy = updatedStrategy
-  strategies[idx].updatedAt = Date.now()
-  saveAll(strategies)
+  local[idx].strategy  = updatedStrategy
+  local[idx].updatedAt = Date.now()
+  saveLocal(local)
+  try { await sbSet(SB_TABLE, local[idx], id) } catch {}
   return true
 }
 
-// ── Combine: update the strategy AND record the new video as another source ──
-export function addCombinedSource(id, updatedStrategy, source = {}) {
-  const strategies = loadAll()
-  const idx = strategies.findIndex(s => s.id === id)
+// ── Add combined source ──────────────────────────────────────────
+export async function addCombinedSource(id, updatedStrategy, source = {}) {
+  const local = loadLocal()
+  const idx   = local.findIndex(s => s.id === id)
   if (idx === -1) return false
-  strategies[idx].strategy = updatedStrategy
-  strategies[idx].sources = [...(strategies[idx].sources || []), makeSource(source)]
-  strategies[idx].updatedAt = Date.now()
-  saveAll(strategies)
+  local[idx].strategy  = updatedStrategy
+  local[idx].sources   = [...(local[idx].sources || []), makeSource(source)]
+  local[idx].updatedAt = Date.now()
+  saveLocal(local)
+  try { await sbSet(SB_TABLE, local[idx], id) } catch {}
   return true
 }
 
+// ── List all strategies — merge Supabase + local ─────────────────
+export async function listStrategiesAsync() {
+  try {
+    const rows = await sbGetAll(SB_TABLE)
+    if (rows?.length) {
+      const strategies = rows.map(r => r.data).filter(Boolean)
+      saveLocal(strategies)  // keep local in sync
+      return strategies.sort((a, b) => b.updatedAt - a.updatedAt)
+    }
+  } catch {}
+  return loadLocal().sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+// Sync version for places that need it immediately (kept for compatibility)
 export function listStrategies() {
-  return loadAll().sort((a, b) => b.updatedAt - a.updatedAt)
+  return loadLocal().sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
 export function getStrategy(id) {
-  return loadAll().find(s => s.id === id) || null
+  return loadLocal().find(s => s.id === id) || null
 }
 
-export function deleteStrategy(id) {
-  saveAll(loadAll().filter(s => s.id !== id))
+export async function deleteStrategy(id) {
+  saveLocal(loadLocal().filter(s => s.id !== id))
+  try { await sbDelete(SB_TABLE, id) } catch {}
 }

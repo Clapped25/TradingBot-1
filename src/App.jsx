@@ -1,10 +1,12 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import StrategyInput from './components/StrategyInput'
 import StrategyReview from './components/StrategyReview'
 import BacktestResults from './components/BacktestResults'
 import LearningDashboard from './components/LearningDashboard'
 import LiveMode from './components/LiveMode'
-import { updateStrategy } from './strategyStorage'
+import { updateStrategy, listStrategiesAsync } from './strategyStorage'
+import { syncFromSupabase } from './paperBroker'
+import { syncMemoryFromSupabase } from './tradeMemory'
 
 const SCREENS = ['input', 'review', 'results']
 const STEP_LABELS = ['Strategy Input', 'Review Rules', 'Backtest & Replay']
@@ -15,6 +17,15 @@ export default function App() {
   const [strategy, setStrategy] = useState(null)
   const [strategyId, setStrategyId] = useState(null)
   const [backtestData, setBacktestData] = useState(null)
+  const [synced, setSynced] = useState(false)
+
+  // Sync all data from Supabase on load
+  useEffect(() => {
+    Promise.all([
+      syncFromSupabase(),
+      syncMemoryFromSupabase(),
+    ]).finally(() => setSynced(true))
+  }, [])
 
   const screenIdx = SCREENS.indexOf(screen)
   const isDashboard = screen === 'dashboard'

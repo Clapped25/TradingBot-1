@@ -1,3 +1,5 @@
+import { sbGet, sbSet } from './supabase'
+
 // Unified Trade Memory v3 — ONE shared, permanent knowledge base.
 // Four upgrades over the basic win-rate filter:
 //
@@ -37,11 +39,21 @@ function loadMemory() {
 }
 
 function saveMemory(memory) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(memory)) } catch {}
+  // Async sync to Supabase — fire and forget
+  sbSet('learning_memory', memory, 'main').catch(() => {})
+}
+
+// ── Pull latest learning memory from Supabase on app load ────────
+export async function syncMemoryFromSupabase() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(memory))
-  } catch {
-    // storage full or unavailable — learning still works for this session
-  }
+    const data = await sbGet('learning_memory', 'main')
+    if (data?.trades?.length) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+      return true
+    }
+  } catch {}
+  return false
 }
 
 function comboKeyFor(factors) {

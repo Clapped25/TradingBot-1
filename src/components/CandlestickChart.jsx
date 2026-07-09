@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts'
+import { createChart, CandlestickSeries, LineSeries, createSeriesMarkers } from 'lightweight-charts'
 
 const IND_COLORS = {
   ema9:   '#f0a020',
@@ -102,22 +102,25 @@ export default function CandlestickChart({ candles, indicators, trades, replayId
       }))
     )
 
-    // Trade markers
+    // Trade markers — v5 uses createSeriesMarkers
     const visibleTrades = trades.filter(t => t.barIndex < limit)
-    candleSeries.setMarkers(
-      visibleTrades.map(t => ({
-        time:     toChartTime(t.time),
-        position: t.type === 'entry' ? 'belowBar' : 'aboveBar',
-        color:    t.type === 'entry'
-          ? '#00c878'
-          : (t.pnlPct >= 0 ? '#00c878' : '#ff4757'),
-        shape:    t.type === 'entry' ? 'arrowUp' : 'arrowDown',
-        text:     t.type === 'entry'
-          ? 'Buy'
-          : `${t.pnlPct >= 0 ? '+' : ''}${t.pnlPct?.toFixed(2)}%`,
-        size: 1,
-      }))
-    )
+    try {
+      createSeriesMarkers(
+        candleSeries,
+        visibleTrades.map(t => ({
+          time:     toChartTime(t.time),
+          position: t.type === 'entry' ? 'belowBar' : 'aboveBar',
+          color:    t.type === 'entry'
+            ? '#00c878'
+            : (t.pnlPct >= 0 ? '#00c878' : '#ff4757'),
+          shape:    t.type === 'entry' ? 'arrowUp' : 'arrowDown',
+          text:     t.type === 'entry'
+            ? 'Buy'
+            : `${t.pnlPct >= 0 ? '+' : ''}${t.pnlPct?.toFixed(2)}%`,
+          size: 1,
+        }))
+      )
+    } catch (e) { console.warn('Markers:', e.message) }
 
     // Indicator line series — create/update
     // Only draw indicators that are continuous price values (EMA/SMA) —

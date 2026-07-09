@@ -263,6 +263,50 @@ export function shouldTakeTrade(factors, opts = {}) {
   }
 }
 
+// ── Record a single live paper trade into the shared memory ────
+// This is what connects live trading to the learning system.
+// Same memory pool as backtests — live trades influence future filters.
+export function recordLiveTrade(trade, sourceStrategy = 'live') {
+  if (!trade.exitTime || trade.pnlDollars == null) return  // only closed trades
+
+  const memory = loadMemory()
+  const pnlPct = trade.entryPrice
+    ? ((trade.exitPrice - trade.entryPrice) / trade.entryPrice * 100) * (trade.side === 'LONG' ? 1 : -1)
+    : 0
+
+  memory.trades.push({
+    factors:        trade.factors    || {},
+    entryPrice:     trade.entryPrice,
+    exitPrice:      trade.exitPrice,
+    entryTime:      trade.entryTime,
+    exitTime:       trade.exitTime,
+    entryReason:    trade.signal     || 'live',
+    exitReason:     trade.exitReason || 'manual',
+    stopPrice:      trade.stopLoss   || null,
+    takeProfitPrice:trade.takeProfit || null,
+    contracts:      trade.quantity   || 1,
+    riskDollars:    trade.stopLoss
+      ? Math.abs(trade.entryPrice - trade.stopLoss) * (trade.multiplier || 2) * (trade.quantity || 1)
+      : null,
+    dollarPnl:      trade.pnlDollars,
+    pnlPct:         +pnlPct.toFixed(4),
+    rMultiple:      trade.stopLoss
+      ? +(trade.pnlDollars / (Math.abs(trade.entryPrice - trade.stopLoss) * (trade.multiplier || 2) * (trade.quantity || 1))).toFixed(3)
+      : null,
+    mfeR:           null,
+    maeR:           null,
+    qualityScore:   null,
+    regime:         trade.regime     || 'unknown',
+    win:            trade.pnlDollars > 0,
+    session:        getSession(trade.exitTime),
+    sourceStrategy,
+    time:           trade.exitTime,
+    recordedAt:     Date.now(),
+  })
+
+  saveMemory(memory)
+}
+
 // ── Recent losses feed — "what went wrong", across everything ───
 export function getRecentLosses(limit = 15) {
   const memory = loadMemory()

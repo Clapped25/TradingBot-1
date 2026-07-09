@@ -6,6 +6,7 @@ import {
   getAccount, getUnrealizedPnl, checkAutoExit, getStats, resetPaperAccount,
 } from '../paperBroker'
 import { generatePineScript } from '../pineScriptExporter'
+import { shouldTakeTrade, recordLiveTrade, getSession, SESSION_LABELS } from '../tradeMemory'
 import TradeChart from './TradeChart'
 
 // Primary trading symbol and reference for SMT
@@ -29,6 +30,7 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
   const [isEvaluating,setIsEvaluating]= useState(false)
   const [diagnostics, setDiagnostics]  = useState(null)  // { indicators, lastBar, factors }
   const [activityLog, setActivityLog]  = useState([])      // live feed of bot activity
+  const [filterDecision, setFilterDecision] = useState(null)  // { take, sizeFactor, reason }
 
   // ── Position & account ──────────────────────────────────────────
   const [position,    setPosition]    = useState(null)
@@ -63,6 +65,15 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
     } else {
       setUnrealizedPnl(0)
     }
+  }
+
+  // ── Normalize signal factors to { key: bool } format ───────────
+  function normalizeFactor(factors) {
+    if (!factors) return {}
+    if (Array.isArray(factors)) {
+      return Object.fromEntries(factors.map(f => [f.name || f.label || 'factor', f.pass === true]))
+    }
+    return factors
   }
 
   // ── Activity log — shows bot thinking in real time ─────────────
@@ -208,20 +219,40 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
   function placeOrder(side) {
     const sl  = parseFloat(manualSL) || null
     const tp  = parseFloat(manualTP) || null
+
+    // ── Check learning system before placing ─────────────────────
+    const factors    = normalizeFactor(signal?.factors)
+    const decision   = shouldTakeTrade(factors, { minSampleSize: 8, expectancyFloor: 0 })
+    setFilterDecision(decision)
+
+    if (!decision.take && decision.sampleSize >= 8) {
+      const reason = `Blocked by learning system — expectancy ${decision.expectancyR}R over ${decision.sampleSize} backtests`
+      logActivity('filter', `⛔ BLOCKED ${side}`, reason)
+      return
+    }
+
+    // Apply size factor from learning system
+    const finalQty  = Math.max(1, Math.round(qty * (decision.sizeFactor || 1)))
+    const sizeNote  = decision.sizeFactor !== 1 && decision.sampleSize >= 8
+      ? ` (${decision.sizeFactor}x size — ${decision.expectancyR}R expectancy)`
+      : ''
+
     const res = openTrade({
       symbol:     SYMBOL,
       side,
       entryPrice: livePrice,
-      quantity:   qty,
+      quantity:   finalQty,
       stopLoss:   sl,
       takeProfit: tp,
       signal:     signal?.action || 'manual',
+      factors,
+      regime:     'unknown',
     })
     if (res.error) {
       alert(res.error)
       logActivity('error', res.error)
     } else {
-      logActivity('trade', `Opened ${side} @ ${livePrice?.toFixed(2)}`, `${qty}x ${SYMBOL}`)
+      logActivity('trade', `Opened ${side} @ ${livePrice?.toFixed(2)}${sizeNote}`, `${finalQty}x ${SYMBOL}`)
       refreshBroker(livePrice)
     }
   }
@@ -230,7 +261,9 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
     if (!livePrice) return
     const res = closeTrade({ exitPrice: livePrice, exitReason: reason })
     if (res.ok) {
-      logActivity('trade', `Closed ${positionSide} @ ${livePrice?.toFixed(2)}`, `P&L: ${res.pnlDollars >= 0 ? '+' : ''}$${res.pnlDollars?.toFixed(0)}`)
+      // Record into shared learning memory — feeds future backtest filters
+      recordLiveTrade({ ...res.trade, factors: normalizeFactor(signal?.factors) }, strategy?.name || 'live')
+      logActivity('trade', `Closed ${positionSide} @ ${livePrice?.toFixed(2)}`, `P&L: ${res.pnlDollars >= 0 ? '+' : ''}$${res.pnlDollars?.toFixed(0)} → saved to learning memory`)
       refreshBroker(livePrice)
       // Regenerate Pine Script after each close
       const allTrades = getTrades()
@@ -461,6 +494,56 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
               {autoTrade ? '● AUTO ON' : '○ AUTO OFF'}
             </button>
           </div>
+
+          {/* Learning system filter status */}
+          {filterDecision && filterDecision.sampleSize >= 4 && (
+            <div style={{
+              padding: '10px 12px', borderRadius: 8, marginBottom: 14,
+              background: filterDecision.take
+                ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
+              border: `1px solid ${filterDecision.take
+                ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
+            }}>
+              <div className="row" style={{ marginBottom: 4 }}>
+                <span style={{
+                  fontSize: 13, fontWeight: 700,
+                  color: filterDecision.take ? 'var(--green)' : 'var(--red)',
+                }}>
+                  {filterDecision.take ? '✓ Learning system: APPROVED' : '⛔ Learning system: BLOCKED'}
+                </span>
+                <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-dim)' }}>
+                  {filterDecision.sampleSize} backtests
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'var(--text-muted)' }}>
+                <span>Expectancy: <strong style={{
+                  color: filterDecision.expectancyR > 0 ? 'var(--green)' : 'var(--red)'
+                }}>{filterDecision.expectancyR}R</strong></span>
+                <span>Win rate: <strong>{filterDecision.winRate}%</strong></span>
+                <span>Size: <strong>{filterDecision.sizeFactor}x</strong></span>
+                {filterDecision.usedSession && (
+                  <span>Session: <strong>{filterDecision.usedSession}</strong></span>
+                )}
+              </div>
+              {!filterDecision.take && (
+                <div style={{ fontSize: 11, color: 'var(--red)', marginTop: 4 }}>
+                  This setup has negative expectancy in backtests — trade blocked to protect your account.
+                </div>
+              )}
+            </div>
+          )}
+
+          {filterDecision && filterDecision.sampleSize < 4 && (
+            <div style={{
+              padding: '8px 12px', borderRadius: 8, marginBottom: 14,
+              background: 'rgba(255,255,255,0.03)',
+              border: '1px solid var(--border)',
+              fontSize: 11, color: 'var(--text-dim)',
+            }}>
+              🧠 Learning system: not enough data yet ({filterDecision.sampleSize}/8 backtests needed).
+              Run more backtests to activate filtering.
+            </div>
+          )}
 
           {/* SL / TP inputs */}
           <div className="row" style={{ gap: 8, marginBottom: 14 }}>

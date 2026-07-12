@@ -129,7 +129,7 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
         return
       }
 
-      const indicators = buildIndicators(allBars, strategy.indicatorDefs || [])
+      const indicators = buildIndicators(allBars, strategy.indicatorDefs || strategy.indicators || [])
       const signalFn   = new Function('i', 'candles', 'ind', 'pos', strategy.signalBody)
       const i          = allBars.length - 1
       const fakePos    = {

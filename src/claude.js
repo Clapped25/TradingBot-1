@@ -15,7 +15,16 @@ function parseStrategyResponse(data, text) {
   }
   if (!match) throw new Error('Claude did not return a valid strategy. Try adding a description.')
   try {
-    return JSON.parse(match[0])
+    const parsed = JSON.parse(match[0])
+    // Always keep indicators and indicatorDefs in sync
+    // so both BacktestResults and LiveMode work correctly
+    if (parsed.indicators && !parsed.indicatorDefs) {
+      parsed.indicatorDefs = parsed.indicators
+    }
+    if (parsed.indicatorDefs && !parsed.indicators) {
+      parsed.indicators = parsed.indicatorDefs
+    }
+    return parsed
   } catch (e) {
     throw new Error(`Claude returned malformed JSON (${e.message}). Try again.`)
   }

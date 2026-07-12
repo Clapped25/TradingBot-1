@@ -23,6 +23,12 @@ function expColor(r) {
 }
 
 export default function LearningDashboard({ onBack }) {
+  // Check if learning memory has untagged trades
+  const memory = (() => { try { return JSON.parse(localStorage.getItem('tradingbot_unified_memory_v3') || '{}') } catch { return {} } })()
+  const trades = memory.trades || []
+  const untagged = trades.filter(t => !t.factors || Object.keys(t.factors).length === 0).length
+  const allUntagged = trades.length > 0 && untagged === trades.length
+
   const [snapshots, setSnapshots] = useState([])
   const [combos, setCombos] = useState([])
   const [summary, setSummary] = useState(null)

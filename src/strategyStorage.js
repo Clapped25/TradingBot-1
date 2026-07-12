@@ -49,6 +49,13 @@ export async function updateStrategy(id, updatedStrategy) {
   const local = loadLocal()
   const idx   = local.findIndex(s => s.id === id)
   if (idx === -1) return false
+  // Always keep indicators and indicatorDefs in sync
+  if (updatedStrategy.indicators && !updatedStrategy.indicatorDefs) {
+    updatedStrategy.indicatorDefs = updatedStrategy.indicators
+  }
+  if (updatedStrategy.indicatorDefs && !updatedStrategy.indicators) {
+    updatedStrategy.indicators = updatedStrategy.indicatorDefs
+  }
   local[idx].strategy  = updatedStrategy
   local[idx].updatedAt = Date.now()
   saveLocal(local)

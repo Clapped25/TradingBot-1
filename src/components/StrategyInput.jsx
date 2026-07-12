@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { extractStrategy, combineStrategy, fixStrategyFactors } from '../claude'
+import { extractStrategy, combineStrategy } from '../claude'
 import { saveStrategy, addCombinedSource, listStrategies, listStrategiesAsync, deleteStrategy } from '../strategyStorage'
 import { getAllTrades } from '../tradeMemory'
 
@@ -215,15 +215,7 @@ export default function StrategyInput({ onStrategyExtracted, onGoLive }) {
                     >
                       ● Go Live
                     </button>
-                    <button
-                      className="btn-sm"
-                      onClick={e => handleFixFactors(record, e)}
-                      style={{ color: 'var(--amber)', border: '1px solid rgba(245,158,11,0.3)' }}
-                      title="Fix factor tagging so the learning filter works"
-                    >
-                      🔧 Fix Factors
-                    </button>
-                    <button
+<button
                       className="btn-sm"
                       onClick={e => handleDelete(record.id, e)}
                     >

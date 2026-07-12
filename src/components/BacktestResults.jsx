@@ -15,7 +15,8 @@ import { getStrategyFeedback } from '../claude'
 import { saveVersion, getPreviousVersion, addTestedMonths, getUnseenMonth } from '../strategyVersioning'
 import { fetchSelectedMonths, getAvailableMonths } from '../massiveFinance'
 
-const SPEED_MS = [800, 400, 200, 100, 50, 25, 10, 4]
+const SPEED_MS   = [800, 400, 200, 100, 50, 16, 16, 16]  // ms between renders
+const BATCH_SIZE = [  1,   1,   1,   1,  1,  5, 20, 50]  // bars per render at high speeds
 const SPEED_LABELS = ['0.5×', '1×', '2×', '4×', '8×', '16×', '32×', '64×']
 const IND_COLORS = {
   ema9: '#f0a020', ema21: '#2d6cdf', ema50: '#9c7aff',
@@ -278,28 +279,45 @@ export default function BacktestResults({
   // has no mechanism to peek further ahead than the bar it's currently
   // being asked about.
   const step = useCallback((currentIdx) => {
-    const next = currentIdx + 1
-    if (next >= candles.length) {
-      setIsPlaying(false)
-      setReplayIdx(candles.length - 1)
-      return
-    }
-    setReplayIdx(next)
+    // Process multiple bars per render at high speeds to prevent lag
+    const batch = BATCH_SIZE[speed] || 1
+    let idx = currentIdx
+    let lastEvent = null
+    let newTrades = []
+    let blocked = 0
 
-    const event = engineRef.current.evaluateBar(next, candles, indicators, signalFn)
-    if (event?.type === 'blocked') {
-      setBlockedCount(n => n + 1)
-      setAlert(event)
+    for (let b = 0; b < batch; b++) {
+      const next = idx + 1
+      if (next >= candles.length) {
+        setIsPlaying(false)
+        setReplayIdx(candles.length - 1)
+        if (newTrades.length) setShownTrades(prev => [...prev, ...newTrades])
+        if (blocked) setBlockedCount(n => n + blocked)
+        return
+      }
+      idx = next
+
+      const event = engineRef.current.evaluateBar(next, candles, indicators, signalFn)
+      if (event?.type === 'blocked') {
+        blocked++
+        lastEvent = event
+      } else if (event) {
+        newTrades.push(event)
+        lastEvent = event
+      }
+    }
+
+    // Single React state update for the whole batch — prevents lag
+    setReplayIdx(idx)
+    if (newTrades.length) setShownTrades(prev => [...prev, ...newTrades])
+    if (blocked) setBlockedCount(n => n + blocked)
+    if (lastEvent) {
+      setAlert(lastEvent)
       clearTimeout(alertTimerRef.current)
       alertTimerRef.current = setTimeout(() => setAlert(null), 4000)
-    } else if (event) {
-      setShownTrades(prev => [...prev, event])
-      setAlert(event)
-      clearTimeout(alertTimerRef.current)
-      alertTimerRef.current = setTimeout(() => setAlert(null), 4000)
     }
 
-    timerRef.current = setTimeout(() => step(next), SPEED_MS[speed])
+    timerRef.current = setTimeout(() => step(idx), SPEED_MS[speed])
   }, [candles, indicators, signalFn, speed])
 
   function startPlay() {

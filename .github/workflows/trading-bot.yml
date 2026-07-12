@@ -1,0 +1,39 @@
+name: Trading Bot
+
+on:
+  schedule:
+    # Every 5 minutes during NY session (9:30am - 4pm ET = 13:30 - 20:00 UTC)
+    # Monday to Friday only
+    - cron: '30,35,40,45,50,55 13 * * 1-5'  # 9:30am - 9:55am ET
+    - cron: '0,5,10,15,20,25,30,35,40,45,50,55 14,15,16,17,18,19 * * 1-5'  # 10am - 3:55pm ET
+    - cron: '0 20 * * 1-5'  # 4:00pm ET final check
+
+  # Allow manual trigger from GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4  # Kill if stuck — never runs over into next 5min window
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: server/package.json
+
+      - name: Install dependencies
+        run: cd server && npm install
+
+      - name: Run trading bot
+        env:
+          MASSIVE_API_KEY:   ${{ secrets.MASSIVE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON:     ${{ secrets.SUPABASE_ANON }}
+        run: cd server && node bot.js

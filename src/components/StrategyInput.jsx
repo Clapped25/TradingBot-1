@@ -14,7 +14,15 @@ export default function StrategyInput({ onStrategyExtracted, onGoLive }) {
   const [tradeCounts, setTradeCounts] = useState({}) // strategyName → trade count
 
   useEffect(() => {
-    setSaved(listStrategies())
+    // Load local first (instant)
+    const local = listStrategies()
+    if (local.length) setSaved(local)
+
+    // Then pull from Supabase and update if newer/more data
+    listStrategiesAsync().then(remote => {
+      if (remote?.length) setSaved(remote)
+    }).catch(() => {})
+
     // Count trades per strategy name from the unified journal
     const counts = {}
     for (const t of getAllTrades()) {

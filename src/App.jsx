@@ -24,7 +24,11 @@ export default function App() {
     Promise.all([
       syncFromSupabase(),
       syncMemoryFromSupabase(),
-    ]).finally(() => setSynced(true))
+    ]).finally(() => {
+      setSynced(true)
+      // Force re-render of strategy list after sync
+      setScreen(s => s)
+    })
   }, [])
 
   const screenIdx = SCREENS.indexOf(screen)

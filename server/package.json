@@ -1,0 +1,13 @@
+{
+  "name": "trading-bot-server",
+  "version": "1.0.0",
+  "description": "24/7 trading bot engine — runs on GitHub Actions / Railway",
+  "main": "bot.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}

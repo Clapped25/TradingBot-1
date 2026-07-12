@@ -93,7 +93,19 @@ function recencyWeight(recordedAt, now) {
 // forever, across sessions.
 export function recordBacktestTrades(exits, sourceStrategy = 'unknown') {
   const memory = loadMemory()
-  memory.trades = memory.trades.filter(t => t.sourceStrategy !== sourceStrategy)
+  // Only remove trades from the exact same month being replayed
+  // so cross-month learning accumulates properly.
+  // We identify the month by the time range of the new exits.
+  if (exits.length > 0) {
+    const minTime = Math.min(...exits.map(t => t.time || 0))
+    const maxTime = Math.max(...exits.map(t => t.time || 0))
+    // Remove only trades from same strategy AND same time window (same month)
+    memory.trades = memory.trades.filter(t => {
+      if (t.sourceStrategy !== sourceStrategy) return true  // keep other strategies
+      if (!t.time) return false                              // remove untagged old trades
+      return t.time < minTime || t.time > maxTime           // keep trades outside this month
+    })
+  }
   for (const t of exits) {
     memory.trades.push({
       factors: t.factors || {},

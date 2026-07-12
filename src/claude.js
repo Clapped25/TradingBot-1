@@ -69,7 +69,12 @@ const STRATEGY_JSON_SHAPE = `{
 
 const SIGNAL_BODY_SPEC = `The signalBody is a JavaScript function body with params (i, candles, ind, pos):
 - Reference detectors as ind.<id>?.[i] using the exact ids from the indicators array
-- Return {action:'buy', reason:'...', factors:{...}} for long entry — the factors object MUST use these exact keys when relevant: fvg, ifvg, liquiditySweep, rejectionBlock, bos, cisd, smt (boolean values, only include the ones actually true/relevant to this entry)
+- Return {action:'buy', reason:'...', factors:{...}} for long entry
+- The factors object is CRITICAL for the learning system — WITHOUT it the filter cannot work
+- ALWAYS include factors on every entry signal, no exceptions
+- Use these exact keys when relevant: fvg, ifvg, liquiditySweep, rejectionBlock, bos, cisd, smt, htfBias, session, inducement (boolean values, true only if that condition is actually met)
+- Example: factors:{fvg:true, bos:true, liquiditySweep:false, smt:false}
+- If you skip factors the learning filter is completely blind — include them always
 - Return {action:'sell', reason:'...'} for long exit — factors not required on exit
 - Return {action:'none'} when no signal
 - Always guard against null/undefined indicator values with ?. and Boolean()`
@@ -327,6 +332,61 @@ Return ONLY raw JSON (no markdown, no backticks):
 }
 
 // ── Fetch OHLCV candles from Binance Futures ──────────────────
+
+// ── Fix missing factors in an existing strategy signal body ─────
+// Call this when a strategy was extracted without proper factor tagging.
+// Rewrites just the return statements to include factors.
+export async function fixStrategyFactors(strategy) {
+  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY
+  if (!apiKey) throw new Error('No API key found')
+
+  const prompt = `You are fixing a trading strategy signal function that is missing the required factors object.
+
+Current signal body:
+${strategy.signalBody}
+
+Strategy name: ${strategy.name}
+Strategy conditions: ${JSON.stringify(strategy.entryConditions || [])}
+
+TASK: Rewrite the signalBody so every entry return statement includes a factors object.
+
+Rules:
+- Keep ALL existing logic exactly the same — only add/fix the factors object
+- factors must be a flat object with boolean values
+- Use these keys: fvg, ifvg, liquiditySweep, rejectionBlock, bos, cisd, smt, htfBias, inducement
+- Only include keys that are actually checked in the logic
+- Example good return: return {action:'buy', reason:'...', factors:{fvg:true, bos:true, liquiditySweep:true}}
+- Exit signals don't need factors
+
+Return ONLY a JSON object like this, no other text:
+{
+  "fixedSignalBody": "the complete fixed function body as a single escaped string"
+}`
+
+  const res = await fetch(ANTHROPIC_URL, {
+    method: 'POST',
+    headers: IS_LOCAL
+      ? { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }
+      : { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 2000,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  })
+
+  if (!res.ok) throw new Error(`API error ${res.status}`)
+  const data = await res.json()
+  if (data.error) throw new Error(data.error.message)
+
+  const text = data.content[0].text
+  const match = text.match(/\{[\s\S]*\}/)
+  if (!match) throw new Error('No JSON returned')
+
+  const parsed = JSON.parse(match[0])
+  return { ...strategy, signalBody: parsed.fixedSignalBody }
+}
+
 export async function fetchCandles(symbol, interval, limit = 300) {
   const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
   const res = await fetch(url)

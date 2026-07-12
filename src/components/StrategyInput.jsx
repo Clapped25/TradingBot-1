@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { extractStrategy, combineStrategy } from '../claude'
-import { saveStrategy, addCombinedSource, listStrategies, deleteStrategy } from '../strategyStorage'
+import { saveStrategy, addCombinedSource, listStrategies, listStrategiesAsync, deleteStrategy } from '../strategyStorage'
 import { getAllTrades } from '../tradeMemory'
 
 export default function StrategyInput({ onStrategyExtracted, onGoLive }) {

@@ -7,6 +7,7 @@ import {
 } from '../paperBroker'
 import { generatePineScript } from '../pineScriptExporter'
 import { shouldTakeTrade, recordLiveTrade, getSession, SESSION_LABELS } from '../tradeMemory'
+import { calcDynamicRisk } from '../riskEngine'
 import TradeChart from './TradeChart'
 
 // Primary trading symbol and reference for SMT
@@ -30,7 +31,9 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
   const [isEvaluating,setIsEvaluating]= useState(false)
   const [diagnostics, setDiagnostics]  = useState(null)  // { indicators, lastBar, factors }
   const [activityLog, setActivityLog]  = useState([])      // live feed of bot activity
+  const [recentBars,  setRecentBars]    = useState([])      // last fetched bars for ATR
   const [filterDecision, setFilterDecision] = useState(null)  // { take, sizeFactor, reason }
+  const [riskCalc, setRiskCalc]         = useState(null)  // dynamic risk parameters
 
   // ── Position & account ──────────────────────────────────────────
   const [position,    setPosition]    = useState(null)
@@ -166,6 +169,7 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
         logActivity('factors', `${passed}/${result.factors.length} conditions met`, result.factors.map(f => `${f.pass ? '✓' : '✗'} ${f.name || ''}`).join('  '))
       }
 
+      setRecentBars(allBars)
       setSignal(result || { action: 'NONE' })
       setSignalAge(Date.now())
 
@@ -217,25 +221,33 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
 
   // ── Trade actions ───────────────────────────────────────────────
   function placeOrder(side) {
-    const sl  = parseFloat(manualSL) || null
-    const tp  = parseFloat(manualTP) || null
-
-    // ── Check learning system before placing ─────────────────────
-    const factors    = normalizeFactor(signal?.factors)
-    const decision   = shouldTakeTrade(factors, { minSampleSize: 8, expectancyFloor: 0 })
+    // ── Check learning system ────────────────────────────────────
+    const factors  = normalizeFactor(signal?.factors)
+    const decision = shouldTakeTrade(factors, { minSampleSize: 8, expectancyFloor: 0 })
     setFilterDecision(decision)
 
     if (!decision.take && decision.sampleSize >= 8) {
-      const reason = `Blocked by learning system — expectancy ${decision.expectancyR}R over ${decision.sampleSize} backtests`
-      logActivity('filter', `⛔ BLOCKED ${side}`, reason)
+      logActivity('filter', `⛔ BLOCKED ${side}`, `Expectancy ${decision.expectancyR}R over ${decision.sampleSize} backtests`)
       return
     }
 
-    // Apply size factor from learning system
-    const finalQty  = Math.max(1, Math.round(qty * (decision.sizeFactor || 1)))
-    const sizeNote  = decision.sizeFactor !== 1 && decision.sampleSize >= 8
-      ? ` (${decision.sizeFactor}x size — ${decision.expectancyR}R expectancy)`
-      : ''
+    // ── Dynamic risk calculation ─────────────────────────────────
+    const account = getAccount()
+    const risk = calcDynamicRisk({
+      candles:     recentBars.length > 20 ? recentBars : null,
+      side,
+      entryPrice:  livePrice,
+      symbol:      SYMBOL,
+      accountSize: account.balance,
+      decision,
+      baseRiskPct: 1,
+    })
+    setRiskCalc(risk)
+
+    // Use manual SL/TP if set, otherwise use dynamic calculation
+    const sl = parseFloat(manualSL) || risk.stopPrice
+    const tp = parseFloat(manualTP) || risk.targetPrice
+    const finalQty = risk.contracts
 
     const res = openTrade({
       symbol:     SYMBOL,
@@ -248,11 +260,15 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
       factors,
       regime:     'unknown',
     })
+
     if (res.error) {
       alert(res.error)
       logActivity('error', res.error)
     } else {
-      logActivity('trade', `Opened ${side} @ ${livePrice?.toFixed(2)}${sizeNote}`, `${finalQty}x ${SYMBOL}`)
+      logActivity('trade',
+        `Opened ${side} @ ${livePrice?.toFixed(2)}`,
+        `${finalQty}x ${SYMBOL} · SL ${sl?.toFixed(2)} · TP ${tp?.toFixed(2)} · Risk $${risk.riskDollars} · ${risk.rrRatio}R · ${risk.reasoning}`
+      )
       refreshBroker(livePrice)
     }
   }
@@ -542,6 +558,39 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
             }}>
               🧠 Learning system: not enough data yet ({filterDecision.sampleSize}/8 backtests needed).
               Run more backtests to activate filtering.
+            </div>
+          )}
+
+          {/* Dynamic risk display */}
+          {riskCalc && (
+            <div style={{
+              padding: '10px 12px', borderRadius: 8, marginBottom: 14,
+              background: 'rgba(59,130,246,0.08)',
+              border: '1px solid rgba(59,130,246,0.2)',
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: 'var(--blue)' }}>
+                📊 Dynamic Risk Calculator
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 8 }}>
+                {[
+                  ['Contracts', riskCalc.contracts],
+                  ['Risk $', `$${riskCalc.riskDollars}`],
+                  ['Risk %', `${riskCalc.riskPct}%`],
+                  ['Stop', `${riskCalc.stopDistance}pts`],
+                  ['Target', `${riskCalc.rrRatio}R`],
+                  ['Profit', `$${riskCalc.potentialProfitDollars}`],
+                ].map(([label, val]) => (
+                  <div key={label} style={{ textAlign: 'center', padding: '6px', background: 'var(--surface)', borderRadius: 6 }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 2 }}>{label}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                ATR {riskCalc.currentATR}pts
+                {riskCalc.sampleSize >= 8 && ` · ${riskCalc.winRate}% win rate · ${riskCalc.riskMultiplier}x size`}
+                {riskCalc.sampleSize < 8 && ' · No backtest data yet — using base 1% risk'}
+              </div>
             </div>
           )}
 

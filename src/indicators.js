@@ -65,3 +65,33 @@ export function buildIndicators(candles, defs = [], candlesB = null) {
 
   return result
 }
+
+// ── ATR (Average True Range) ─────────────────────────────────────
+// Measures current market volatility — used to set dynamic stops.
+export function calcATR(candles, period = 14) {
+  const result = new Array(candles.length).fill(null)
+  if (candles.length < period + 1) return result
+
+  // True Range for each bar
+  const tr = candles.map((c, i) => {
+    if (i === 0) return c.high - c.low
+    const prevClose = candles[i - 1].close
+    return Math.max(
+      c.high - c.low,
+      Math.abs(c.high - prevClose),
+      Math.abs(c.low  - prevClose)
+    )
+  })
+
+  // Initial ATR = simple average of first period TRs
+  let atr = tr.slice(0, period).reduce((s, v) => s + v, 0) / period
+  result[period - 1] = atr
+
+  // Wilder smoothing
+  for (let i = period; i < candles.length; i++) {
+    atr = (atr * (period - 1) + tr[i]) / period
+    result[i] = +atr.toFixed(4)
+  }
+
+  return result
+}

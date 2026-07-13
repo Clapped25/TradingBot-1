@@ -184,40 +184,25 @@ function sleep(ms) {
 // Used by LiveMode to poll current price every 60 seconds.
 // Uses 1-minute bars with sort=desc + limit=1 for lowest latency.
 export async function fetchLatestPrice(symbolKey) {
+  // Massive's single-bar sort is broken — returns midnight bar instead of latest.
+  // Fix: fetch the full month and take the last bar, same as the chart does.
+  const now   = new Date()
+  const year  = now.getFullYear()
+  const month = now.getMonth() + 1
   const { code } = FUTURES_SYMBOLS[symbolKey] || FUTURES_SYMBOLS.NQ
-  const apiKey   = import.meta.env.VITE_MASSIVE_API_KEY
-  if (!apiKey) throw new Error('Missing VITE_MASSIVE_API_KEY in .env')
+  const ticker = getFrontMonthTicker(code, now)
 
-  const today  = new Date().toISOString().slice(0, 10)
-  const ticker = getFrontMonthTicker(code, new Date())
+  const bars = await fetchMonthRange(symbolKey, '5m', year, month)
+  if (!bars.length) return null
 
-  const url = `${BASE_URL}/futures/v1/aggs/${encodeURIComponent(ticker)}` +
-    `?resolution=1min` +
-    `&window_start.gte=${today}` +
-    `&window_start.lte=${today}` +
-    `&limit=1` +
-    `&sort=window_start.desc` +
-    `&apiKey=${apiKey}`
-
-  const res = await fetch(url)
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(`Massive ${res.status}: ${err.message || res.statusText}`)
-  }
-
-  const data = await res.json()
-  if (data.status === 'ERROR') throw new Error(`Massive: ${data.error}`)
-
-  const bar = (data.results || [])[0]
-  if (!bar) return null
-
+  const bar = bars[bars.length - 1]
   return {
     price:  bar.close,
     open:   bar.open,
     high:   bar.high,
     low:    bar.low,
     close:  bar.close,
-    time:   bar.window_start / 1e6,  // nanoseconds → milliseconds
+    time:   bar.time,
     ticker,
   }
 }

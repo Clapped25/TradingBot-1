@@ -1,6 +1,7 @@
 import { calculatePositionSize, getContractSpec } from './account'
 import { shouldTakeTrade } from './tradeMemory'
 import { detectRegime } from './marketRegime'
+import { calcDynamicRisk } from './riskEngine'
 
 // ── Stateful backtest engine ──────────────────────────────────────
 // Evaluates ONE bar at a time and never looks ahead — at bar i, it only
@@ -131,39 +132,45 @@ export function createBacktestEngine(config = {}) {
     }
     if (stopPrice == null || stopPrice >= entryPrice) return null
 
-    const stopDistance = entryPrice - stopPrice
-    const { contracts: baseContracts, riskDollars: baseRiskDollars } = calculatePositionSize({
-      accountBalance: balance, riskPct, stopDistance, symbolKey, useMicro,
-    })
-    if (baseContracts < 1) return null
-
-    // Learning filter + confidence-scaled sizing — proven combos can
-    // size up (to 1.5x), shaky or unproven ones size down (to 0.5x),
-    // and combos with a clearly negative expectancy get hard-blocked.
-    let contracts = baseContracts
-    let riskDollars = baseRiskDollars
+    // ── Learning filter ───────────────────────────────────────────
+    let decision = { take: true, sizeFactor: 1, confidence: 0, sampleSize: 0, winRate: null, expectancyR: null }
     if (useLearning) {
-      const check = shouldTakeTrade(result.factors || {}, {
+      decision = shouldTakeTrade(result.factors || {}, {
         minSampleSize: learningMinSample,
         expectancyFloor: learningExpectancyFloor,
       })
-      if (!check.take) {
+      if (!decision.take) {
         return {
           type: 'blocked',
           barIndex: i,
           time: c.time,
           factors: result.factors || {},
-          reason: `Blocked by learning — this combo's expectancy is ${check.expectancyR >= 0 ? '+' : ''}${check.expectancyR}R over ${check.sampleSize} trades${check.usedSession ? ` (${check.usedSession} session)` : ''}, at or below the ${learningExpectancyFloor}R floor`,
+          reason: `Blocked by learning — expectancy ${decision.expectancyR >= 0 ? '+' : ''}${decision.expectancyR}R over ${decision.sampleSize} trades${decision.usedSession ? ` (${decision.usedSession} session)` : ''}`,
         }
-      }
-      if (check.confidence > 0) {
-        contracts = Math.max(0, Math.round(baseContracts * check.sizeFactor))
-        riskDollars = baseRiskDollars * check.sizeFactor
-        if (contracts < 1) return null
       }
     }
 
-    const takeProfitPrice = entryPrice + stopDistance * rMultiple
+    // ── Dynamic risk: ATR-based stop + probability-adjusted target ─
+    const dynamicRisk = calcDynamicRisk({
+      candles:     candles.slice(0, i + 1),
+      side:        'LONG',
+      entryPrice,
+      symbol:      useMicro ? (symbolKey === 'ES' ? 'MES' : 'MNQ') : symbolKey,
+      accountSize: balance,
+      decision,
+      baseRiskPct: riskPct,
+    })
+
+    // Use dynamic ATR stop if signal didn't specify one
+    if (stopPrice == null || stopPrice >= entryPrice) {
+      stopPrice = dynamicRisk.stopPrice
+    }
+
+    const stopDistance   = entryPrice - stopPrice
+    const contracts      = dynamicRisk.contracts
+    const riskDollars    = dynamicRisk.riskDollars
+    const takeProfitPrice = dynamicRisk.targetPrice
+    if (contracts < 1) return null
 
     pos = 'long'
     entryIdx = i
@@ -182,6 +189,12 @@ export function createBacktestEngine(config = {}) {
       contracts,
       riskDollars,
       balanceAtEntry: balance,
+      // Dynamic risk metadata
+      atr:           dynamicRisk.currentATR,
+      rrRatio:       dynamicRisk.rrRatio,
+      winRate:       dynamicRisk.winRate,
+      riskMultiplier: dynamicRisk.riskMultiplier,
+      riskPct:       dynamicRisk.riskPct,
     }
     trades.push(entryTrade)
     return entryTrade

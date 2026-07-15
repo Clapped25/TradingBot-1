@@ -73,7 +73,7 @@ function getFrontMonthTicker(code) {
 async function fetchRecentBars(bars = 120) {
   const ticker = getFrontMonthTicker(PRIMARY)
   const now    = new Date()
-  const from   = new Date(now.getTime() - 12 * 60 * 60 * 1000)
+  const from   = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000) // 3 days back
   const url    = `https://api.massive.com/futures/v1/aggs/${ticker}` +
     `?resolution=5min` +
     `&window_start.gte=${from.toISOString().slice(0,10)}` +
@@ -349,7 +349,8 @@ async function runCycle() {
   let candles
   try {
     candles = await fetchRecentBars(120)
-    if (candles.length < 20) { console.log('Not enough bars'); return }
+    console.log(`Fetched ${candles.length} bars from Massive`)
+    if (candles.length < 20) { console.log('Not enough bars — need 20 minimum'); return }
   } catch (e) {
     await logActivity('error', 'Bar fetch failed', e.message)
     return

@@ -404,8 +404,9 @@ console.log(`   Sessions: NY (9am-5pm ET), London (3am-8am ET), Asian (7pm-12am 
 runCycle()
 setInterval(runCycle, POLL_MS)
 
-// Keep process alive
-process.on('SIGTERM', () => {
-  console.log('Shutting down gracefully...')
-  process.exit(0)
-})
+// Keep process alive — ignore SIGTERM to prevent Railway from killing the loop
+process.on('SIGTERM', () => console.log('SIGTERM received — continuing...'))
+process.on('SIGINT',  () => console.log('SIGINT received — continuing...'))
+
+// Heartbeat to prevent Railway from thinking process is idle
+setInterval(() => {}, 1000 * 60 * 60)

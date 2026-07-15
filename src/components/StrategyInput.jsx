@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { extractStrategy, combineStrategy } from '../claude'
 import { saveStrategy, addCombinedSource, listStrategies, listStrategiesAsync, deleteStrategy } from '../strategyStorage'
+import { sbSet } from '../supabase'
 import { getAllTrades } from '../tradeMemory'
 
 export default function StrategyInput({ onStrategyExtracted, onGoLive }) {
@@ -214,6 +215,14 @@ export default function StrategyInput({ onStrategyExtracted, onGoLive }) {
                       }}
                     >
                       ● Go Live
+                    </button>
+                    <button
+                      className="btn-sm"
+                      onClick={e => handleSetActive(record, e)}
+                      style={{ color: 'var(--blue)', border: '1px solid rgba(59,130,246,0.3)' }}
+                      title="Set as the strategy the GitHub Actions bot trades"
+                    >
+                      🤖 Set Active
                     </button>
 <button
                       className="btn-sm"

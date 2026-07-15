@@ -1,22 +1,19 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // TradingBot Server Engine
 //
-// Runs every 5 minutes via GitHub Actions during market hours.
-// Reads strategy from Supabase, fetches live price from Massive,
-// evaluates signal, manages paper trades, saves everything back to Supabase.
-//
-// When moving to Railway: this same file runs as a persistent process
-// with a setInterval instead of being triggered by GitHub Actions.
+// Runs 24/7 on Railway as a persistent process.
+// Evaluates signal every 5 minutes, manages paper trades, saves to Supabase.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import fetch from 'node-fetch'
 
-const MASSIVE_API_KEY   = process.env.MASSIVE_API_KEY
-const SUPABASE_URL      = process.env.SUPABASE_URL
-const SUPABASE_ANON     = process.env.SUPABASE_ANON
-const PRIMARY           = 'NQ'
-const SYMBOL            = 'MNQ'
-const MULTIPLIER        = 2  // MNQ = $2 per point
+const MASSIVE_API_KEY = process.env.MASSIVE_API_KEY
+const SUPABASE_URL    = process.env.SUPABASE_URL
+const SUPABASE_ANON   = process.env.SUPABASE_ANON
+const PRIMARY         = 'NQ'
+const SYMBOL          = 'MNQ'
+const MULTIPLIER      = 2
+const POLL_MS         = 5 * 60 * 1000  // 5 minutes
 
 // ── Supabase helpers ─────────────────────────────────────────────
 const SB_HEADERS = {
@@ -42,42 +39,38 @@ async function sbSet(table, data, id = 'main') {
   return res.ok
 }
 
-// ── Massive API helpers ──────────────────────────────────────────
-const QUARTERLY = [
-  { month: 3 }, { month: 6 }, { month: 9 }, { month: 12 }
-]
-
-function getFrontMonthTicker(code) {
-  const now   = new Date()
-  const year  = now.getFullYear()
-  const month = now.getMonth() + 1
-  const codes = ['F','G','H','J','K','M','N','Q','U','V','X','Z']
-  const expiry = QUARTERLY.find(e => e.month >= month) || QUARTERLY[0]
-  const yr     = expiry.month >= month ? year : year + 1
-  const mc     = codes[(expiry.month - 1)]
-  return `${code}${mc}${String(yr).slice(-1)}`
+// ── Session check ─────────────────────────────────────────────────
+function isMarketSession() {
+  const hour = new Date().getUTCHours()
+  const isNY     = hour >= 13 && hour < 21   // 9am-5pm ET
+  const isLondon = hour >= 7  && hour < 12   // 3am-8am ET
+  const isAsian  = hour >= 23 || hour < 4    // 7pm-12am ET
+  return { isNY, isLondon, isAsian, trading: isNY || isLondon || isAsian }
 }
 
-async function fetchLatestPrice() {
-  const ticker = getFrontMonthTicker(PRIMARY)
-  const today  = new Date().toISOString().slice(0, 10)
-  const url    = `https://api.massive.com/futures/v1/aggs/${ticker}` +
-    `?resolution=1min&window_start.gte=${today}&window_start.lte=${today}&limit=1&sort=window_start.desc&apiKey=${MASSIVE_API_KEY}`
+// ── Massive API ───────────────────────────────────────────────────
+const QUARTERLY = [{ month: 3 }, { month: 6 }, { month: 9 }, { month: 12 }]
+const MONTH_CODES = ['F','G','H','J','K','M','N','Q','U','V','X','Z']
 
-  const res  = await fetch(url)
-  if (!res.ok) throw new Error(`Massive ${res.status}`)
-  const data = await res.json()
-  const bar  = (data.results || [])[0]
-  if (!bar) return null
-  return { price: bar.close, high: bar.high, low: bar.low, time: bar.window_start / 1e6 }
+function getFrontMonthTicker(code) {
+  const now    = new Date()
+  const year   = now.getFullYear()
+  const month  = now.getMonth() + 1
+  const expiry = QUARTERLY.find(e => e.month >= month) || QUARTERLY[0]
+  const yr     = expiry.month >= month ? year : year + 1
+  const mc     = MONTH_CODES[expiry.month - 1]
+  return `${code}${mc}${String(yr).slice(-1)}`
 }
 
 async function fetchRecentBars(bars = 120) {
   const ticker = getFrontMonthTicker(PRIMARY)
   const now    = new Date()
-  const from   = new Date(now.getTime() - 12 * 60 * 60 * 1000)  // last 12 hours
+  const from   = new Date(now.getTime() - 12 * 60 * 60 * 1000)
   const url    = `https://api.massive.com/futures/v1/aggs/${ticker}` +
-    `?resolution=5min&window_start.gte=${from.toISOString().slice(0,10)}&window_start.lte=${now.toISOString().slice(0,10)}&limit=${bars}&sort=window_start.asc&apiKey=${MASSIVE_API_KEY}`
+    `?resolution=5min` +
+    `&window_start.gte=${from.toISOString().slice(0,10)}` +
+    `&window_start.lte=${now.toISOString().slice(0,10)}` +
+    `&limit=${bars}&sort=window_start.asc&apiKey=${MASSIVE_API_KEY}`
 
   const res  = await fetch(url)
   if (!res.ok) throw new Error(`Massive bars ${res.status}`)
@@ -88,7 +81,14 @@ async function fetchRecentBars(bars = 120) {
   }))
 }
 
-// ── Paper broker (server-side, reads/writes Supabase) ────────────
+async function fetchLatestPrice() {
+  const bars = await fetchRecentBars(5)
+  if (!bars.length) return null
+  const bar = bars[bars.length - 1]
+  return { price: bar.close, time: bar.time, ticker: getFrontMonthTicker(PRIMARY) }
+}
+
+// ── Paper broker ──────────────────────────────────────────────────
 async function getAccount() {
   return await sbGet('paper_account') || {
     startingBalance: 25000, balance: 25000,
@@ -106,20 +106,11 @@ function getOpenPosition(trades) {
 
 async function openTrade(trades, { side, entryPrice, stopLoss, takeProfit, signal }) {
   const trade = {
-    id:         Date.now(),
-    symbol:     SYMBOL,
-    side,
-    entryPrice,
-    quantity:   1,
-    stopLoss:   stopLoss   || null,
-    takeProfit: takeProfit || null,
-    signal:     signal     || null,
-    entryTime:  Date.now(),
-    exitTime:   null,
-    exitPrice:  null,
-    exitReason: null,
-    pnlDollars: null,
-    multiplier: MULTIPLIER,
+    id: Date.now(), symbol: SYMBOL, side, entryPrice,
+    quantity: 1, stopLoss: stopLoss || null, takeProfit: takeProfit || null,
+    signal: signal || null, entryTime: Date.now(),
+    exitTime: null, exitPrice: null, exitReason: null,
+    pnlDollars: null, multiplier: MULTIPLIER,
   }
   trades.push(trade)
   await sbSet('paper_trades', trades)
@@ -130,34 +121,25 @@ async function openTrade(trades, { side, entryPrice, stopLoss, takeProfit, signa
 async function closeTrade(trades, exitPrice, exitReason = 'signal') {
   const idx = trades.findIndex(t => !t.exitTime)
   if (idx === -1) return null
-
   const trade      = trades[idx]
-  const pnlPoints  = trade.side === 'LONG'
-    ? exitPrice - trade.entryPrice
-    : trade.entryPrice - exitPrice
+  const pnlPoints  = trade.side === 'LONG' ? exitPrice - trade.entryPrice : trade.entryPrice - exitPrice
   const pnlDollars = pnlPoints * MULTIPLIER * trade.quantity
-
-  trades[idx] = { ...trade, exitTime: Date.now(), exitPrice, exitReason, pnlDollars }
+  trades[idx]      = { ...trade, exitTime: Date.now(), exitPrice, exitReason, pnlDollars }
   await sbSet('paper_trades', trades)
-
-  const account = await getAccount()
+  const account        = await getAccount()
   account.balance     += pnlDollars
   account.realizedPnl += pnlDollars
   account.totalTrades++
   if (pnlDollars > 0) account.wins++
   else account.losses++
   await sbSet('paper_account', account)
-
   console.log(`📉 Closed ${trade.side} @ ${exitPrice} — P&L: ${pnlDollars >= 0 ? '+' : ''}$${pnlDollars.toFixed(0)}`)
   return trades[idx]
 }
 
-// ── Signal evaluation ────────────────────────────────────────────
+// ── Indicators ────────────────────────────────────────────────────
 function buildSimpleIndicators(candles) {
-  // Basic indicators the signal function can use
   const closes = candles.map(c => c.close)
-  const highs  = candles.map(c => c.high)
-  const lows   = candles.map(c => c.low)
 
   function ema(arr, period) {
     const result = new Array(arr.length).fill(null)
@@ -176,11 +158,9 @@ function buildSimpleIndicators(candles) {
     let gains = 0, losses = 0
     for (let i = 1; i <= period; i++) {
       const diff = arr[i] - arr[i - 1]
-      if (diff > 0) gains += diff
-      else losses -= diff
+      if (diff > 0) gains += diff; else losses -= diff
     }
-    let avgGain = gains / period
-    let avgLoss = losses / period
+    let avgGain = gains / period, avgLoss = losses / period
     result[period] = 100 - (100 / (1 + avgGain / (avgLoss || 0.001)))
     for (let i = period + 1; i < arr.length; i++) {
       const diff = arr[i] - arr[i - 1]
@@ -191,128 +171,165 @@ function buildSimpleIndicators(candles) {
     return result
   }
 
+  // SMC indicators
+  const n = candles.length
+  const swingHigh = new Array(n).fill(false)
+  const swingLow  = new Array(n).fill(false)
+  for (let i = 2; i < n - 2; i++) {
+    if (candles[i].high > candles[i-1].high && candles[i].high > candles[i-2].high &&
+        candles[i].high > candles[i+1].high && candles[i].high > candles[i+2].high)
+      swingHigh[i] = true
+    if (candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low &&
+        candles[i].low < candles[i+1].low && candles[i].low < candles[i+2].low)
+      swingLow[i] = true
+  }
+
+  const liquiditySweepLow  = new Array(n).fill(false)
+  const liquiditySweepHigh = new Array(n).fill(false)
+  for (let i = 5; i < n; i++) {
+    for (let j = i - 1; j >= Math.max(0, i - 10); j--) {
+      if (swingLow[j]  && candles[i].low  < candles[j].low  && candles[i].close > candles[j].low)
+        liquiditySweepLow[i]  = true
+      if (swingHigh[j] && candles[i].high > candles[j].high && candles[i].close < candles[j].high)
+        liquiditySweepHigh[i] = true
+    }
+  }
+
+  const bosBullish = new Array(n).fill(false)
+  const bosBearish = new Array(n).fill(false)
+  let lastSwingHigh = null, lastSwingLow = null
+  for (let i = 0; i < n; i++) {
+    if (swingHigh[i]) lastSwingHigh = candles[i].high
+    if (swingLow[i])  lastSwingLow  = candles[i].low
+    if (lastSwingHigh && candles[i].close > lastSwingHigh) { bosBullish[i] = true; lastSwingHigh = null }
+    if (lastSwingLow  && candles[i].close < lastSwingLow)  { bosBearish[i] = true; lastSwingLow  = null }
+  }
+
+  const bullishFVG = new Array(n).fill(false)
+  const bearishFVG = new Array(n).fill(false)
+  for (let i = 2; i < n; i++) {
+    if (candles[i].low > candles[i-2].high) bullishFVG[i] = true
+    if (candles[i].high < candles[i-2].low) bearishFVG[i] = true
+  }
+
+  const rejectionBlockBullish = new Array(n).fill(false)
+  const rejectionBlockBearish = new Array(n).fill(false)
+  for (let i = 1; i < n; i++) {
+    const c = candles[i], p = candles[i-1]
+    if (p.close < p.open && c.close > p.open) rejectionBlockBullish[i] = true
+    if (p.close > p.open && c.close < p.open) rejectionBlockBearish[i] = true
+  }
+
   return {
-    ema20:  ema(closes, 20),
-    ema50:  ema(closes, 50),
-    ema200: ema(closes, 200),
-    rsi14:  rsi(closes, 14),
-    highs,
-    lows,
-    closes,
+    ema20: ema(closes, 20), ema50: ema(closes, 50), ema200: ema(closes, 200),
+    rsi14: rsi(closes, 14),
+    swingHigh, swingLow,
+    liquiditySweepLow, liquiditySweepHigh,
+    bosBullish, bosBearish,
+    bullishFVG, bearishFVG,
+    bullishIFVG: bearishFVG, bearishIFVG: bullishFVG,
+    rejectionBlockBullish, rejectionBlockBearish,
+    cisdBullish: bosBullish, cisdBearish: bosBearish,
+    smtBullish: new Array(n).fill(false), smtBearish: new Array(n).fill(false),
   }
 }
 
-function evaluateSignal(candles, indicators, signalBody) {
+// ── Signal evaluation ─────────────────────────────────────────────
+function evaluateSignal(candles, indicators, signalBody, openPos) {
   try {
-    const fn = new Function('i', 'candles', 'ind', 'pos', signalBody)
-    const i  = candles.length - 1
-    return fn(i, candles, indicators, { isOpen: false, side: 'FLAT' })
+    const fn  = new Function('i', 'candles', 'ind', 'pos', signalBody)
+    const i   = candles.length - 1
+    const pos = openPos
+      ? { isOpen: true, side: openPos.side }
+      : { isOpen: false, side: 'FLAT' }
+    return fn(i, candles, indicators, pos)
   } catch (e) {
     console.error('Signal error:', e.message)
     return null
   }
 }
 
-// ── Learning system filter ───────────────────────────────────────
+// ── Learning filter ───────────────────────────────────────────────
 async function shouldTakeTrade(factors) {
   try {
     const memory = await sbGet('learning_memory') || { trades: [] }
     if (!memory.trades?.length) return { take: true, sizeFactor: 1 }
-
     const comboKey = Object.entries(factors || {})
-      .filter(([, v]) => v === true)
-      .map(([k]) => k).sort().join(' + ')
-
+      .filter(([, v]) => v === true).map(([k]) => k).sort().join(' + ')
     if (!comboKey) return { take: true, sizeFactor: 1 }
-
     const matching = memory.trades.filter(t => {
       const key = Object.entries(t.factors || {})
-        .filter(([, v]) => v === true)
-        .map(([k]) => k).sort().join(' + ')
+        .filter(([, v]) => v === true).map(([k]) => k).sort().join(' + ')
       return key === comboKey
     })
-
     if (matching.length < 8) return { take: true, sizeFactor: 1, sampleSize: matching.length }
-
-    const wins = matching.filter(t => t.win).length
     const expectancy = matching.reduce((s, t) => s + (t.rMultiple || 0), 0) / matching.length
-
     return {
       take:       expectancy > 0,
       sizeFactor: Math.max(0.5, Math.min(1.5, 1 + expectancy * 0.5)),
       expectancy: +expectancy.toFixed(3),
       sampleSize: matching.length,
-      winRate:    +((wins / matching.length) * 100).toFixed(1),
     }
   } catch {
     return { take: true, sizeFactor: 1 }
   }
 }
 
-// ── Bot log (saved to Supabase so you can see it in the app) ─────
+// ── Activity log ──────────────────────────────────────────────────
 async function logActivity(type, message, detail = null) {
+  const entry = { type, message, detail, time: new Date().toISOString() }
   console.log(`[${type.toUpperCase()}] ${message}${detail ? ` — ${detail}` : ''}`)
   try {
     const log = await sbGet('bot_log') || []
-    log.unshift({ type, message, detail, time: new Date().toISOString() })
-    await sbSet('bot_log', log.slice(0, 100))  // keep last 100 entries
+    log.unshift(entry)
+    await sbSet('bot_log', log.slice(0, 200))
   } catch {}
 }
 
-// ── Main run function ────────────────────────────────────────────
-async function run() {
-  console.log(`\n🤖 TradingBot starting — ${new Date().toISOString()}`)
+// ── Main run cycle ────────────────────────────────────────────────
+async function runCycle() {
+  console.log(`\n⏰ ${new Date().toISOString()}`)
 
-  // Load active strategy from Supabase
-  const strategies = await sbGet('active_strategy')
-  if (!strategies?.signalBody) {
-    console.log('No active strategy set — skipping')
-    await logActivity('info', 'No active strategy configured', 'Set one from the app')
+  // Session filter disabled — running 24/7 for testing
+  const session = isMarketSession()
+  const sessionName = session.isNY ? 'newyork' : session.isLondon ? 'london' : session.isAsian ? 'asian' : 'offhours'
+  console.log(`✓ Running 24/7 mode — session: ${sessionName}`)
+
+  // Load strategy
+  const strategy = await sbGet('active_strategy')
+  if (!strategy?.signalBody) {
+    console.log('No active strategy — click 🤖 Set Active in the app')
     return
   }
 
-  const strategy = strategies
-
-  // Fetch live price
+  // Fetch price
   let priceData
   try {
     priceData = await fetchLatestPrice()
-    if (!priceData) {
-      console.log('No price data — market may be closed')
-      await logActivity('price', 'No price data', 'Market may be closed')
-      return
-    }
-    await logActivity('price', `${PRIMARY}: ${priceData.price.toFixed(2)}`)
+    if (!priceData) { console.log('No price data'); return }
+    await logActivity('price', `${PRIMARY}: ${priceData.price.toFixed(2)}`, priceData.ticker)
   } catch (e) {
-    console.error('Price fetch failed:', e.message)
     await logActivity('error', 'Price fetch failed', e.message)
     return
   }
 
   const currentPrice = priceData.price
+  const trades       = await getTrades()
+  const openPos      = getOpenPosition(trades)
 
-  // Load trades and check SL/TP
-  const trades  = await getTrades()
-  const openPos = getOpenPosition(trades)
-
+  // Check SL/TP
   if (openPos) {
-    // Check stop loss
     if (openPos.stopLoss) {
-      const hitStop = openPos.side === 'LONG'
-        ? currentPrice <= openPos.stopLoss
-        : currentPrice >= openPos.stopLoss
-      if (hitStop) {
+      const hit = openPos.side === 'LONG' ? currentPrice <= openPos.stopLoss : currentPrice >= openPos.stopLoss
+      if (hit) {
         await closeTrade(trades, currentPrice, 'stopLoss')
         await logActivity('trade', `Stop loss hit @ ${currentPrice}`)
         return
       }
     }
-    // Check take profit
     if (openPos.takeProfit) {
-      const hitTp = openPos.side === 'LONG'
-        ? currentPrice >= openPos.takeProfit
-        : currentPrice <= openPos.takeProfit
-      if (hitTp) {
+      const hit = openPos.side === 'LONG' ? currentPrice >= openPos.takeProfit : currentPrice <= openPos.takeProfit
+      if (hit) {
         await closeTrade(trades, currentPrice, 'takeProfit')
         await logActivity('trade', `Take profit hit @ ${currentPrice}`)
         return
@@ -320,63 +337,75 @@ async function run() {
     }
   }
 
-  // Fetch recent bars for signal evaluation
+  // Fetch bars and evaluate signal
   let candles
   try {
     candles = await fetchRecentBars(120)
-    if (candles.length < 20) {
-      await logActivity('info', 'Not enough bars for signal evaluation')
-      return
-    }
+    if (candles.length < 20) { console.log('Not enough bars'); return }
   } catch (e) {
     await logActivity('error', 'Bar fetch failed', e.message)
     return
   }
 
-  // Build indicators and evaluate signal
   const indicators = buildSimpleIndicators(candles)
-  const signal     = evaluateSignal(candles, indicators, strategy.signalBody)
+  const signal     = evaluateSignal(candles, indicators, strategy.signalBody, openPos)
 
   await logActivity('signal', `Signal: ${signal?.action || 'NONE'}`, signal?.reason || null)
 
-  if (!signal?.action || signal.action === 'NONE') return
+  if (!signal?.action || signal.action === 'none' || signal.action === 'NONE') return
 
-  // Handle EXIT signal
-  if (signal.action === 'EXIT' && openPos) {
+  // Exit signal
+  if ((signal.action === 'exit' || signal.action === 'EXIT') && openPos) {
     await closeTrade(trades, currentPrice, 'signal')
     await logActivity('trade', `Closed ${openPos.side} on EXIT signal @ ${currentPrice}`)
     return
   }
 
-  // Check learning filter before opening
-  if (!openPos && (signal.action === 'LONG' || signal.action === 'SHORT')) {
+  // Entry signal
+  if (!openPos && (signal.action === 'buy' || signal.action === 'LONG')) {
     const decision = await shouldTakeTrade(signal.factors || {})
-
     if (!decision.take && decision.sampleSize >= 8) {
-      await logActivity('filter', `⛔ BLOCKED ${signal.action}`,
-        `Expectancy ${decision.expectancy}R over ${decision.sampleSize} backtests`)
+      await logActivity('filter', `⛔ BLOCKED LONG`, `Expectancy ${decision.expectancy}R`)
       return
     }
-
-    await openTrade(trades, {
-      side:       signal.action,
-      entryPrice: currentPrice,
-      stopLoss:   signal.stopPrice || null,
-      takeProfit: signal.targetPrice || null,
-      signal:     signal.action,
-    })
-
-    await logActivity('trade', `Opened ${signal.action} @ ${currentPrice}`,
-      decision.sampleSize >= 8
-        ? `${decision.sizeFactor}x size — ${decision.expectancy}R expectancy`
-        : 'No filter data yet')
+    const atr        = candles.slice(-14).reduce((s, c, i, a) => {
+      if (i === 0) return s
+      return s + Math.max(c.high - c.low, Math.abs(c.high - a[i-1].close), Math.abs(c.low - a[i-1].close))
+    }, 0) / 13
+    const stopLoss   = currentPrice - atr * 1.5
+    const takeProfit = currentPrice + atr * 1.5 * 2
+    await openTrade(trades, { side: 'LONG', entryPrice: currentPrice, stopLoss, takeProfit, signal: 'LONG' })
+    await logActivity('trade', `Opened LONG @ ${currentPrice}`, `SL: ${stopLoss.toFixed(2)} TP: ${takeProfit.toFixed(2)}`)
   }
 
-  console.log('✓ Bot run complete')
+  if (!openPos && (signal.action === 'sell' || signal.action === 'SHORT')) {
+    const decision = await shouldTakeTrade(signal.factors || {})
+    if (!decision.take && decision.sampleSize >= 8) {
+      await logActivity('filter', `⛔ BLOCKED SHORT`, `Expectancy ${decision.expectancy}R`)
+      return
+    }
+    const atr        = candles.slice(-14).reduce((s, c, i, a) => {
+      if (i === 0) return s
+      return s + Math.max(c.high - c.low, Math.abs(c.high - a[i-1].close), Math.abs(c.low - a[i-1].close))
+    }, 0) / 13
+    const stopLoss   = currentPrice + atr * 1.5
+    const takeProfit = currentPrice - atr * 1.5 * 2
+    await openTrade(trades, { side: 'SHORT', entryPrice: currentPrice, stopLoss, takeProfit, signal: 'SHORT' })
+    await logActivity('trade', `Opened SHORT @ ${currentPrice}`, `SL: ${stopLoss.toFixed(2)} TP: ${takeProfit.toFixed(2)}`)
+  }
 }
 
-// Run and exit
-run().catch(e => {
-  console.error('Bot error:', e)
-  process.exit(1)
+// ── Persistent loop ───────────────────────────────────────────────
+console.log('🤖 TradingBot starting — persistent mode (Railway)')
+console.log(`   Polling every ${POLL_MS / 60000} minutes`)
+console.log(`   Sessions: NY (9am-5pm ET), London (3am-8am ET), Asian (7pm-12am ET)\n`)
+
+// Run immediately then every 5 minutes
+runCycle()
+setInterval(runCycle, POLL_MS)
+
+// Keep process alive
+process.on('SIGTERM', () => {
+  console.log('Shutting down gracefully...')
+  process.exit(0)
 })

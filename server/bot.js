@@ -7,9 +7,9 @@
 
 import fetch from 'node-fetch'
 
-const MASSIVE_API_KEY = process.env.MASSIVE_API_KEY
-const SUPABASE_URL    = process.env.SUPABASE_URL
-const SUPABASE_ANON   = process.env.SUPABASE_ANON
+const MASSIVE_API_KEY = (process.env.MASSIVE_API_KEY || '').trim()
+const SUPABASE_URL    = 'https://dxnxtthvupbfydttqcpk.supabase.co'
+const SUPABASE_ANON   = (process.env.SUPABASE_ANON || '').trim().replace(/[\r\n\t]/g, '')
 const PRIMARY         = 'NQ'
 const SYMBOL          = 'MNQ'
 const MULTIPLIER      = 2

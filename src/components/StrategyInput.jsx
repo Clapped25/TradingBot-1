@@ -108,6 +108,16 @@ export default function StrategyInput({ onStrategyExtracted, onGoLive }) {
     e.target.value = ""
   }
 
+  async function handleSetActive(record, e) {
+    e.stopPropagation()
+    try {
+      await sbSet('active_strategy', record.strategy, 'main')
+      alert(`✓ "${record.strategy.name}" set as active — Railway bot will use this strategy`)
+    } catch (err) {
+      alert('Failed: ' + err.message)
+    }
+  }
+
   function handleDelete(id, e) {
     e.stopPropagation()
     deleteStrategy(id)

@@ -298,8 +298,8 @@ async function runCycle() {
   // Load strategy
   const strategy = await sbGet('active_strategy')
   if (!strategy?.signalBody) {
-    console.log('No active strategy — click 🤖 Set Active in the app')
-    return
+    console.log('⏳ No active strategy yet — waiting for next cycle...')
+    return  // Just skip this cycle, don't exit
   }
 
   // Fetch price
@@ -404,9 +404,11 @@ console.log(`   Sessions: NY (9am-5pm ET), London (3am-8am ET), Asian (7pm-12am 
 runCycle()
 setInterval(runCycle, POLL_MS)
 
-// Keep process alive — ignore SIGTERM to prevent Railway from killing the loop
-process.on('SIGTERM', () => console.log('SIGTERM received — continuing...'))
-process.on('SIGINT',  () => console.log('SIGINT received — continuing...'))
+// Keep process alive permanently
+process.on('SIGTERM', () => console.log('SIGTERM ignored — bot keeps running'))
+process.on('SIGINT',  () => console.log('SIGINT ignored — bot keeps running'))
+process.on('uncaughtException', (e) => console.error('Uncaught:', e.message))
+process.on('unhandledRejection', (e) => console.error('Unhandled:', e?.message || e))
 
-// Heartbeat to prevent Railway from thinking process is idle
-setInterval(() => {}, 1000 * 60 * 60)
+// Heartbeat every 30 seconds to keep process alive
+setInterval(() => console.log('💓 heartbeat'), 30_000)

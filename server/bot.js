@@ -6,6 +6,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import fetch from 'node-fetch'
+import http from 'http'
+
+// Simple HTTP server so Railway knows the process is healthy
+const PORT = process.env.PORT || 3000
+http.createServer((req, res) => {
+  res.writeHead(200)
+  res.end('TradingBot running')
+}).listen(PORT, () => console.log(`Health check server on port ${PORT}`))
 
 const MASSIVE_API_KEY = (process.env.MASSIVE_API_KEY || '').trim()
 const SUPABASE_URL    = 'https://dxnxtthvupbfydttqcpk.supabase.co'

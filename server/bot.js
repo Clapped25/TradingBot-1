@@ -27,10 +27,16 @@ async function sbGet(table, id = 'main') {
   return (await res.json())?.[0]?.data ?? null
 }
 async function sbSet(table, data, id = 'main') {
-  await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
     method: 'POST', headers: SB_HEADERS,
     body: JSON.stringify({ id, data, updated_at: new Date().toISOString() }),
   })
+  if (!res.ok) {
+    const err = await res.text()
+    console.error(`sbSet FAILED ${table}: ${res.status} ${err}`)
+    throw new Error(`sbSet ${table} failed: ${res.status}`)
+  }
+  return res
 }
 
 // ── Massive ───────────────────────────────────────────────────────

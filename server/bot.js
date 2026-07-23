@@ -1,12 +1,10 @@
 import fetch from 'node-fetch'
 import http from 'http'
 
-// Health check server so Railway knows process is alive
+// Health check server
 const PORT = process.env.PORT || 3000
-http.createServer((req, res) => {
-  res.writeHead(200)
-  res.end('TradingBot running')
-}).listen(PORT, () => console.log(`Health check on port ${PORT}`))
+http.createServer((req, res) => { res.writeHead(200); res.end('TradingBot running') })
+  .listen(PORT, () => console.log(`Health check on port ${PORT}`))
 
 const MASSIVE_API_KEY = (process.env.MASSIVE_API_KEY || '').trim()
 const SUPABASE_URL    = 'https://dxnxtthvupbfydttqcpk.supabase.co'
@@ -16,21 +14,18 @@ const SYMBOL          = 'MNQ'
 const MULTIPLIER      = 2
 const POLL_MS         = 5 * 60 * 1000
 
-// ── Supabase ─────────────────────────────────────────────────────
+// ── Supabase ──────────────────────────────────────────────────────
 const SB_HEADERS = {
   'Content-Type':  'application/json',
   'apikey':        SUPABASE_ANON,
   'Authorization': `Bearer ${SUPABASE_ANON}`,
   'Prefer':        'resolution=merge-duplicates',
 }
-
 async function sbGet(table, id = 'main') {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}&select=data`, { headers: SB_HEADERS })
   if (!res.ok) return null
-  const rows = await res.json()
-  return rows?.[0]?.data ?? null
+  return (await res.json())?.[0]?.data ?? null
 }
-
 async function sbSet(table, data, id = 'main') {
   await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
     method: 'POST', headers: SB_HEADERS,
@@ -40,12 +35,9 @@ async function sbSet(table, data, id = 'main') {
 
 // ── Massive ───────────────────────────────────────────────────────
 const MONTH_CODES = ['F','G','H','J','K','M','N','Q','U','V','X','Z']
-
 function getFrontMonthTicker(code) {
-  const now = new Date()
-  const y = now.getFullYear(), m = now.getMonth() + 1
-  const quarters = [3,6,9,12]
-  const qm = quarters.find(q => q >= m) || quarters[0]
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth() + 1
+  const qm = [3,6,9,12].find(q => q >= m) || 3
   const yr = qm >= m ? y : y + 1
   return `${code}${MONTH_CODES[qm-1]}${String(yr).slice(-1)}`
 }
@@ -53,40 +45,42 @@ function getFrontMonthTicker(code) {
 async function fetchRecentBars(limit = 120) {
   const ticker = getFrontMonthTicker(PRIMARY)
   const now    = new Date()
-  const from   = new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000)
-  const gte    = from.toISOString().slice(0, 10)
+  // Use today as lte and 10 days back as gte to always catch current bars
   const lte    = now.toISOString().slice(0, 10)
-  console.log(`Fetching ${ticker} bars ${gte} → ${lte}`)
+  const from   = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000)
+  const gte    = from.toISOString().slice(0, 10)
 
+  // Fetch descending to get MOST RECENT bars first, then reverse
   const url = `https://api.massive.com/futures/v1/aggs/${ticker}` +
     `?resolution=5min&window_start.gte=${gte}&window_start.lte=${lte}` +
-    `&limit=${limit}&sort=window_start.asc&apiKey=${MASSIVE_API_KEY}` +
-    `&_t=${Date.now()}`  // cache bust
+    `&limit=${limit}&sort=window_start.desc&apiKey=${MASSIVE_API_KEY}&_t=${Date.now()}`
 
-  const res = await fetch(url, {
-    headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
-  })
+  console.log(`Fetching ${ticker} desc from ${gte} to ${lte}`)
+  const res  = await fetch(url, { headers: { 'Cache-Control': 'no-cache' } })
   if (!res.ok) throw new Error(`Massive ${res.status}: ${await res.text()}`)
   const data = await res.json()
-  const bars = (data.results || []).map(b => ({
+
+  // Reverse so oldest first (ascending order for indicators)
+  const bars = (data.results || []).reverse().map(b => ({
     time: b.window_start / 1e6, open: b.open, high: b.high, low: b.low, close: b.close,
   }))
+
   if (bars.length > 0) {
     const last = bars[bars.length - 1]
-    console.log(`Got ${bars.length} bars. Last: ${new Date(last.time).toISOString()} close:${last.close}`)
+    console.log(`Got ${bars.length} bars. Most recent: ${new Date(last.time).toISOString()} close:${last.close}`)
   }
   return bars
 }
 
 // ── Paper broker ──────────────────────────────────────────────────
-async function getTrades()     { return await sbGet('paper_trades')  || [] }
-async function getAccount()    { return await sbGet('paper_account') || { startingBalance:25000, balance:25000, realizedPnl:0, totalTrades:0, wins:0, losses:0 } }
-function getOpenPos(trades)    { return trades.find(t => !t.exitTime) || null }
+async function getTrades()  { return await sbGet('paper_trades')  || [] }
+async function getAccount() { return await sbGet('paper_account') || { startingBalance:25000, balance:25000, realizedPnl:0, totalTrades:0, wins:0, losses:0 } }
+function getOpenPos(trades) { return trades.find(t => !t.exitTime) || null }
 
 async function openTrade(trades, side, price, sl, tp) {
   trades.push({ id: Date.now(), symbol: SYMBOL, side, entryPrice: price, quantity: 1,
-    stopLoss: sl, takeProfit: tp, entryTime: Date.now(), exitTime: null,
-    exitPrice: null, exitReason: null, pnlDollars: null, multiplier: MULTIPLIER })
+    stopLoss: sl, takeProfit: tp, entryTime: Date.now(),
+    exitTime: null, exitPrice: null, exitReason: null, pnlDollars: null, multiplier: MULTIPLIER })
   await sbSet('paper_trades', trades)
   console.log(`📈 Opened ${side} @ ${price} SL:${sl?.toFixed(2)} TP:${tp?.toFixed(2)}`)
 }
@@ -95,7 +89,7 @@ async function closeTrade(trades, price, reason) {
   const idx = trades.findIndex(t => !t.exitTime)
   if (idx === -1) return
   const t = trades[idx]
-  const pnl = ((t.side === 'LONG' ? price - t.entryPrice : t.entryPrice - price) * MULTIPLIER)
+  const pnl = (t.side === 'LONG' ? price - t.entryPrice : t.entryPrice - price) * MULTIPLIER
   trades[idx] = { ...t, exitTime: Date.now(), exitPrice: price, exitReason: reason, pnlDollars: pnl }
   await sbSet('paper_trades', trades)
   const acc = await getAccount()
@@ -108,73 +102,49 @@ async function closeTrade(trades, price, reason) {
 // ── Indicators ────────────────────────────────────────────────────
 function buildIndicators(candles) {
   const n = candles.length
-  const swH = new Array(n).fill(false)
-  const swL = new Array(n).fill(false)
-
-  for (let i = 3; i < n - 3; i++) {
+  const swH = new Array(n).fill(false), swL = new Array(n).fill(false)
+  for (let i = 3; i < n-3; i++) {
     if (candles[i].high > candles[i-1].high && candles[i].high > candles[i-2].high &&
         candles[i].high > candles[i-3].high && candles[i].high > candles[i+1].high &&
-        candles[i].high > candles[i+2].high && candles[i].high > candles[i+3].high)
-      swH[i] = true
+        candles[i].high > candles[i+2].high && candles[i].high > candles[i+3].high) swH[i] = true
     if (candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low &&
         candles[i].low < candles[i-3].low && candles[i].low < candles[i+1].low &&
-        candles[i].low < candles[i+2].low && candles[i].low < candles[i+3].low)
-      swL[i] = true
+        candles[i].low < candles[i+2].low && candles[i].low < candles[i+3].low) swL[i] = true
   }
-
-  const sweepLow  = new Array(n).fill(false)
-  const sweepHigh = new Array(n).fill(false)
+  const sweepLow = new Array(n).fill(false), sweepHigh = new Array(n).fill(false)
   for (let i = 6; i < n; i++) {
-    for (let j = i - 1; j >= Math.max(0, i - 15); j--) {
-      if (swL[j] && candles[i].low < candles[j].low && candles[i].close > candles[j].low)
-        sweepLow[i] = true
-      if (swH[j] && candles[i].high > candles[j].high && candles[i].close < candles[j].high)
-        sweepHigh[i] = true
+    for (let j = i-1; j >= Math.max(0, i-15); j--) {
+      if (swL[j] && candles[i].low < candles[j].low && candles[i].close > candles[j].low) sweepLow[i] = true
+      if (swH[j] && candles[i].high > candles[j].high && candles[i].close < candles[j].high) sweepHigh[i] = true
     }
   }
-
-  const bosBull = new Array(n).fill(false)
-  const bosBear = new Array(n).fill(false)
-  let lastSH = null, lastSL = null
+  const bosBull = new Array(n).fill(false), bosBear = new Array(n).fill(false)
+  let lsh = null, lsl = null
   for (let i = 0; i < n; i++) {
-    if (swH[i]) lastSH = candles[i].high
-    if (swL[i]) lastSL = candles[i].low
-    if (lastSH && candles[i].close > lastSH) { bosBull[i] = true; lastSH = null }
-    if (lastSL && candles[i].close < lastSL) { bosBear[i] = true; lastSL = null }
+    if (swH[i]) lsh = candles[i].high
+    if (swL[i]) lsl = candles[i].low
+    if (lsh && candles[i].close > lsh) { bosBull[i] = true; lsh = null }
+    if (lsl && candles[i].close < lsl) { bosBear[i] = true; lsl = null }
   }
-
-  const fvgBull = new Array(n).fill(false)
-  const fvgBear = new Array(n).fill(false)
+  const fvgBull = new Array(n).fill(false), fvgBear = new Array(n).fill(false)
   for (let i = 2; i < n; i++) {
     if (candles[i].low  > candles[i-2].high) fvgBull[i] = true
     if (candles[i].high < candles[i-2].low)  fvgBear[i] = true
   }
-
-  const obBull = new Array(n).fill(false)
-  const obBear = new Array(n).fill(false)
+  const obBull = new Array(n).fill(false), obBear = new Array(n).fill(false)
   for (let i = 1; i < n; i++) {
-    const c = candles[i], p = candles[i-1]
-    if (p.close < p.open && c.close > p.open) obBull[i] = true
-    if (p.close > p.open && c.close < p.open) obBear[i] = true
+    if (candles[i-1].close < candles[i-1].open && candles[i].close > candles[i-1].open) obBull[i] = true
+    if (candles[i-1].close > candles[i-1].open && candles[i].close < candles[i-1].open) obBear[i] = true
   }
-
   return {
-    liquiditySweepLow:        sweepLow,
-    liquiditySweepHigh:       sweepHigh,
-    bosBullish:               bosBull,
-    bosBearish:               bosBear,
-    bullishFVG:               fvgBull,
-    bearishFVG:               fvgBear,
-    bullishIFVG:              fvgBear,  // inverse
-    bearishIFVG:              fvgBull,
-    rejectionBlockBullish:    obBull,
-    rejectionBlockBearish:    obBear,
-    cisdBullish:              bosBull,
-    cisdBearish:              bosBear,
-    smtBullish:               new Array(n).fill(false),
-    smtBearish:               new Array(n).fill(false),
-    swingHigh:                swH,
-    swingLow:                 swL,
+    liquiditySweepLow: sweepLow, liquiditySweepHigh: sweepHigh,
+    bosBullish: bosBull, bosBearish: bosBear,
+    bullishFVG: fvgBull, bearishFVG: fvgBear,
+    bullishIFVG: fvgBear, bearishIFVG: fvgBull,
+    rejectionBlockBullish: obBull, rejectionBlockBearish: obBear,
+    cisdBullish: bosBull, cisdBearish: bosBear,
+    smtBullish: new Array(n).fill(false), smtBearish: new Array(n).fill(false),
+    swingHigh: swH, swingLow: swL,
   }
 }
 
@@ -184,10 +154,7 @@ function evalSignal(candles, ind, signalBody, openPos) {
     const fn  = new Function('i', 'candles', 'ind', 'pos', signalBody)
     const pos = openPos ? { isOpen: true, side: openPos.side } : { isOpen: false, side: 'FLAT' }
     return fn(candles.length - 1, candles, ind, pos)
-  } catch (e) {
-    console.error('Signal error:', e.message)
-    return null
-  }
+  } catch (e) { console.error('Signal error:', e.message); return null }
 }
 
 // ── Learning filter ───────────────────────────────────────────────
@@ -195,15 +162,15 @@ async function canTrade(factors) {
   try {
     const mem = await sbGet('learning_memory') || { trades: [] }
     if (!mem.trades?.length) return true
-    const key = Object.entries(factors || {}).filter(([,v]) => v === true).map(([k]) => k).sort().join('+')
+    const key = Object.entries(factors || {}).filter(([,v]) => v).map(([k]) => k).sort().join('+')
     if (!key) return true
     const matching = mem.trades.filter(t => {
-      const tk = Object.entries(t.factors || {}).filter(([,v]) => v === true).map(([k]) => k).sort().join('+')
+      const tk = Object.entries(t.factors || {}).filter(([,v]) => v).map(([k]) => k).sort().join('+')
       return tk === key
     })
     if (matching.length < 8) return true
     const exp = matching.reduce((s,t) => s + (t.rMultiple || 0), 0) / matching.length
-    console.log(`Filter: ${key} exp:${exp.toFixed(3)} n:${matching.length}`)
+    console.log(`Filter: ${key} exp:${exp.toFixed(3)} n:${matching.length} allow:${exp > 0}`)
     return exp > 0
   } catch { return true }
 }
@@ -218,8 +185,8 @@ async function log(type, msg, detail = null) {
   } catch {}
 }
 
-// ── ATR helper ────────────────────────────────────────────────────
-function atr(candles, period = 14) {
+// ── ATR ───────────────────────────────────────────────────────────
+function calcATR(candles, period = 14) {
   const slice = candles.slice(-period - 1)
   let sum = 0
   for (let i = 1; i < slice.length; i++) {
@@ -242,20 +209,17 @@ async function runCycle() {
     return
   }
 
-  // Fetch bars
   let candles
   try {
     candles = await fetchRecentBars(120)
     if (candles.length < 20) { console.log('Not enough bars'); return }
   } catch (e) {
-    await log('error', 'Bar fetch failed', e.message)
-    return
+    await log('error', 'Bar fetch failed', e.message); return
   }
 
   const currentPrice = candles[candles.length - 1].close
   await log('price', `${PRIMARY}: ${currentPrice}`)
 
-  // Build indicators and log what we see
   const ind = buildIndicators(candles)
   const li  = candles.length - 1
   const indLog = [
@@ -270,22 +234,18 @@ async function runCycle() {
   ].join(' | ')
   console.log(`[INDICATORS] ${indLog}`)
 
-  // Check trades and SL/TP
-  const trades = await getTrades()
+  const trades  = await getTrades()
   const openPos = getOpenPos(trades)
 
   if (openPos) {
-    if (openPos.stopLoss) {
-      const hit = openPos.side === 'LONG' ? currentPrice <= openPos.stopLoss : currentPrice >= openPos.stopLoss
-      if (hit) { await closeTrade(trades, currentPrice, 'stopLoss'); return }
+    if (openPos.stopLoss && (openPos.side === 'LONG' ? currentPrice <= openPos.stopLoss : currentPrice >= openPos.stopLoss)) {
+      await closeTrade(trades, currentPrice, 'stopLoss'); return
     }
-    if (openPos.takeProfit) {
-      const hit = openPos.side === 'LONG' ? currentPrice >= openPos.takeProfit : currentPrice <= openPos.takeProfit
-      if (hit) { await closeTrade(trades, currentPrice, 'takeProfit'); return }
+    if (openPos.takeProfit && (openPos.side === 'LONG' ? currentPrice >= openPos.takeProfit : currentPrice <= openPos.takeProfit)) {
+      await closeTrade(trades, currentPrice, 'takeProfit'); return
     }
   }
 
-  // Evaluate signal
   const signal = evalSignal(candles, ind, strategy.signalBody, openPos)
   await log('signal', `Signal: ${signal?.action || 'NONE'}`, signal?.reason || null)
 
@@ -302,18 +262,18 @@ async function runCycle() {
     const allowed = await canTrade(signal.factors || {})
     if (!allowed) { await log('filter', `⛔ BLOCKED ${signal.action}`); return }
 
-    const a    = atr(candles)
-    const sl   = isBuy  ? currentPrice - a * 1.5 : currentPrice + a * 1.5
-    const tp   = isBuy  ? currentPrice + a * 3.0 : currentPrice - a * 3.0
-    const side = isBuy  ? 'LONG' : 'SHORT'
+    const a  = calcATR(candles)
+    const sl = isBuy  ? currentPrice - a * 1.5 : currentPrice + a * 1.5
+    const tp = isBuy  ? currentPrice + a * 3.0 : currentPrice - a * 3.0
+    const side = isBuy ? 'LONG' : 'SHORT'
     await openTrade(trades, side, currentPrice, sl, tp)
     await log('trade', `Opened ${side} @ ${currentPrice}`, `SL:${sl.toFixed(2)} TP:${tp.toFixed(2)}`)
   }
 }
 
 // ── Start ─────────────────────────────────────────────────────────
-console.log('🤖 TradingBot — Railway persistent mode')
-console.log(`   Polling every ${POLL_MS/60000} minutes | 24/7 no session filter`)
+console.log('🤖 TradingBot — Railway 24/7')
+console.log(`   Polling every ${POLL_MS/60000} minutes`)
 
 process.on('SIGTERM', () => console.log('SIGTERM ignored'))
 process.on('SIGINT',  () => console.log('SIGINT ignored'))

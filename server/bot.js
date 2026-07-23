@@ -42,7 +42,7 @@ function getFrontMonthTicker(code) {
   return `${code}${MONTH_CODES[qm-1]}${String(yr).slice(-1)}`
 }
 
-async function fetchRecentBars(limit = 120) {
+async function fetchRecentBars(limit = 300) {
   const ticker = getFrontMonthTicker(PRIMARY)
   const now    = new Date()
   // Use today as lte and 10 days back as gte to always catch current bars
@@ -211,7 +211,7 @@ async function runCycle() {
 
   let candles
   try {
-    candles = await fetchRecentBars(120)
+    candles = await fetchRecentBars(300)
     if (candles.length < 20) { console.log('Not enough bars'); return }
   } catch (e) {
     await log('error', 'Bar fetch failed', e.message); return

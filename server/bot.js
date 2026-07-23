@@ -46,16 +46,16 @@ async function fetchRecentBars(limit = 120) {
   const ticker = getFrontMonthTicker(PRIMARY)
   const now    = new Date()
   // Use today as lte and 10 days back as gte to always catch current bars
-  const lte    = now.toISOString().slice(0, 10)
+  // Use full ISO datetime for lte so bars after midnight UTC are included
+  const lte    = now.toISOString().replace('Z', '000Z')  // full datetime
   const from   = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000)
   const gte    = from.toISOString().slice(0, 10)
 
-  // Fetch descending to get MOST RECENT bars first, then reverse
   const url = `https://api.massive.com/futures/v1/aggs/${ticker}` +
-    `?resolution=5min&window_start.gte=${gte}&window_start.lte=${lte}` +
+    `?resolution=5min&window_start.gte=${gte}&window_start.lte=${now.toISOString()}` +
     `&limit=${limit}&sort=window_start.desc&apiKey=${MASSIVE_API_KEY}&_t=${Date.now()}`
 
-  console.log(`Fetching ${ticker} desc from ${gte} to ${lte}`)
+  console.log(`Fetching ${ticker} desc from ${gte} to ${now.toISOString()}`)
   const res  = await fetch(url, { headers: { 'Cache-Control': 'no-cache' } })
   if (!res.ok) throw new Error(`Massive ${res.status}: ${await res.text()}`)
   const data = await res.json()

@@ -100,10 +100,14 @@ function detectStructure(candles) {
 // ── Update bias (called at bar closes) ───────────────────────────
 async function updateBias() {
   try {
-    const [bars1H, bars4H] = await Promise.all([
-      fetchBars('60min', 50),
-      fetchBars('240min', 30),
-    ])
+    // Massive Starter only supports minute bars
+    // Simulate 1H by grouping 5min bars, 4H by using longer lookback
+    const allBars = await fetchBars('5min', 500)
+
+    // 1H proxy: last 100 bars = ~8 hours, use recent structure
+    const bars1H = allBars.slice(-100)
+    // 4H proxy: full 500 bars = ~40 hours, use bigger picture
+    const bars4H = allBars
 
     const bias1H = detectStructure(bars1H)
     const bias4H = detectStructure(bars4H)
@@ -133,7 +137,7 @@ async function updateBias() {
     return bias
   } catch (e) {
     console.error('Bias update failed:', e.message)
-    return { direction: 'both', threshold: 5, bias1H: 'neutral', bias4H: 'neutral' }
+    return { direction: 'both', threshold: 5, bias1H: 'neutral', bias4H: 'neutral', reason: 'Default — bias fetch error' }
   }
 }
 
@@ -162,8 +166,8 @@ async function getTrades()  { return await sbGet('paper_trades')  || [] }
 async function getAccount() { return await sbGet('paper_account') || { startingBalance:25000, balance:25000, realizedPnl:0, totalTrades:0, wins:0, losses:0 } }
 function getOpenPos(trades) { return trades.find(t => !t.exitTime) || null }
 
-async function openTrade(trades, side, price, sl, tp) {
-  trades.push({ id: Date.now(), symbol: SYMBOL, side, entryPrice: price, quantity: 1,
+async function openTrade(trades, side, price, contracts = 1, sl, tp) {
+  trades.push({ id: Date.now(), symbol: SYMBOL, side, entryPrice: price, quantity: contracts,
     stopLoss: sl, takeProfit: tp, entryTime: Date.now(),
     exitTime: null, exitPrice: null, exitReason: null, pnlDollars: null, multiplier: MULTIPLIER })
   await sbSet('paper_trades', trades)
@@ -174,7 +178,7 @@ async function closeTrade(trades, price, reason) {
   const idx = trades.findIndex(t => !t.exitTime)
   if (idx === -1) return
   const t   = trades[idx]
-  const pnl = (t.side === 'LONG' ? price - t.entryPrice : t.entryPrice - price) * MULTIPLIER
+  const pnl = (t.side === 'LONG' ? price - t.entryPrice : t.entryPrice - price) * MULTIPLIER * (t.quantity || 1)
   trades[idx] = { ...t, exitTime: Date.now(), exitPrice: price, exitReason: reason, pnlDollars: pnl }
   await sbSet('paper_trades', trades)
   const acc = await getAccount()
@@ -286,6 +290,66 @@ function calcATR(candles, period = 14) {
   return sum / period
 }
 
+
+// ── Dynamic Risk Engine ───────────────────────────────────────────
+// Combines ATR-based stops with win probability to size each trade
+async function calcDynamicRisk({ candles, side, currentPrice, factors, accountBalance = 25000 }) {
+  const atrVal = calcATR(candles)
+
+  // Get win probability from learning memory
+  let winRate    = 50
+  let expectancy = 0
+  let sampleSize = 0
+  let confidence = 0
+
+  try {
+    const mem = await sbGet('learning_memory') || { trades: [] }
+    if (mem.trades?.length) {
+      const key = Object.entries(factors || {}).filter(([,v]) => v).map(([k]) => k).sort().join('+')
+      if (key) {
+        const matching = mem.trades.filter(t => {
+          const tk = Object.entries(t.factors || {}).filter(([,v]) => v).map(([k]) => k).sort().join('+')
+          return tk === key
+        })
+        if (matching.length >= 4) {
+          sampleSize = matching.length
+          const wins = matching.filter(t => t.win).length
+          winRate    = +((wins / sampleSize) * 100).toFixed(1)
+          expectancy = +(matching.reduce((s,t) => s + (t.rMultiple || 0), 0) / sampleSize).toFixed(3)
+          confidence = Math.min(1, sampleSize / 30)
+        }
+      }
+    }
+  } catch {}
+
+  // ATR-based stop distance
+  const stopDistance = +(atrVal * 1.5).toFixed(2)
+
+  // Win-rate adjusted RR target
+  // Min RR = (1 - winRate) / winRate to be profitable
+  const winFrac = winRate / 100
+  const minRR   = winFrac > 0 ? +((1 - winFrac) / winFrac).toFixed(2) : 2
+  const edgeBonus = confidence * 1.5
+  const rrRatio = +Math.max(1.5, minRR + edgeBonus).toFixed(2)
+
+  const targetDistance = +(stopDistance * rrRatio).toFixed(2)
+
+  const stopPrice   = side === 'LONG' ? +(currentPrice - stopDistance).toFixed(2) : +(currentPrice + stopDistance).toFixed(2)
+  const targetPrice = side === 'LONG' ? +(currentPrice + targetDistance).toFixed(2) : +(currentPrice - targetDistance).toFixed(2)
+
+  // Position sizing — risk 1% of account, adjusted by expectancy confidence
+  const baseRiskPct  = 1
+  const riskMult     = sampleSize >= 8 ? Math.max(0.5, Math.min(1.5, 1 + expectancy * 0.5)) : 1
+  const riskDollars  = accountBalance * (baseRiskPct / 100) * riskMult
+  const dollarPerPt  = 2  // MNQ
+  const rawContracts = riskDollars / (stopDistance * dollarPerPt)
+  const contracts    = Math.max(1, Math.round(rawContracts))
+
+  console.log(`[RISK] ATR:${atrVal.toFixed(2)} stop:${stopDistance} RR:${rrRatio} contracts:${contracts} winRate:${winRate}% (n:${sampleSize})`)
+
+  return { stopPrice, targetPrice, contracts, rrRatio, winRate, expectancy, sampleSize, stopDistance }
+}
+
 // ── Main cycle ────────────────────────────────────────────────────
 async function runCycle() {
   const now = new Date()
@@ -294,7 +358,7 @@ async function runCycle() {
   const strategy = await sbGet('active_strategy')
   if (!strategy?.signalBody) {
     console.log('⏳ No active strategy — click 🤖 Set Active in app')
-    return
+    return  // just skip this cycle, process stays alive
   }
 
   // ── Update bias at bar closes ────────────────────────────────────
@@ -374,14 +438,20 @@ async function runCycle() {
     const allowed = await canTrade(signal.factors || {})
     if (!allowed) { await log('filter', `⛔ BLOCKED — negative expectancy`); return }
 
-    const a    = calcATR(candles)
-    const sl   = isBuy  ? currentPrice - a * 1.5 : currentPrice + a * 1.5
-    const tp   = isBuy  ? currentPrice + a * 3.0 : currentPrice - a * 3.0
-    const side = isBuy  ? 'LONG' : 'SHORT'
+    const side = isBuy ? 'LONG' : 'SHORT'
 
-    await openTrade(trades, side, currentPrice, sl, tp)
+    // ── Dynamic risk: probability-adjusted RR + ATR stops ─────────
+    const risk = calcDynamicRisk({
+      candles,
+      side,
+      currentPrice,
+      factors: signal.factors || {},
+      accountBalance: (await getAccount()).balance,
+    })
+
+    await openTrade(trades, side, currentPrice, risk.contracts, risk.stopPrice, risk.targetPrice)
     await log('trade', `Opened ${side} @ ${currentPrice}`,
-      `SL:${sl.toFixed(2)} TP:${tp.toFixed(2)} | bias:${bias.direction} | session threshold:${sessionThreshold}`)
+      `${risk.contracts}x MNQ | SL:${risk.stopPrice.toFixed(2)} TP:${risk.targetPrice.toFixed(2)} | RR:${risk.rrRatio} | winRate:${risk.winRate}% | bias:${bias.direction}`)
   }
 }
 

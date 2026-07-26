@@ -101,8 +101,8 @@ function detectStructure(candles) {
 async function updateBias() {
   try {
     const [bars1H, bars4H] = await Promise.all([
-      fetchBars('1h', 50),
-      fetchBars('4h', 30),
+      fetchBars('60min', 50),
+      fetchBars('240min', 30),
     ])
 
     const bias1H = detectStructure(bars1H)
@@ -313,7 +313,7 @@ async function runCycle() {
   // Fetch 5min bars for signal
   let candles
   try {
-    const bars5m = await fetchBars('5min', 300)
+    const bars5m = await fetchBars('5min', 300)  // Massive uses 5min not 5m
     candles = bars5m
     if (candles.length < 20) { console.log('Not enough bars'); return }
     const last = candles[candles.length - 1]

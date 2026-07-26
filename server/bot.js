@@ -36,7 +36,6 @@ async function sbSet(table, data, id = 'main') {
     console.error(`sbSet FAILED ${table}: ${res.status} ${err}`)
     throw new Error(`sbSet ${table} failed: ${res.status}`)
   }
-  return res
 }
 
 // ── Massive ───────────────────────────────────────────────────────
@@ -48,34 +47,114 @@ function getFrontMonthTicker(code) {
   return `${code}${MONTH_CODES[qm-1]}${String(yr).slice(-1)}`
 }
 
-async function fetchRecentBars(limit = 300) {
+async function fetchBars(resolution, limit) {
   const ticker = getFrontMonthTicker(PRIMARY)
   const now    = new Date()
-  // Use today as lte and 10 days back as gte to always catch current bars
-  // Use full ISO datetime for lte so bars after midnight UTC are included
-  const lte    = now.toISOString().replace('Z', '000Z')  // full datetime
-  const from   = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000)
+  const from   = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000)
   const gte    = from.toISOString().slice(0, 10)
-
-  const url = `https://api.massive.com/futures/v1/aggs/${ticker}` +
-    `?resolution=5min&window_start.gte=${gte}&window_start.lte=${now.toISOString()}` +
+  const url    = `https://api.massive.com/futures/v1/aggs/${ticker}` +
+    `?resolution=${resolution}&window_start.gte=${gte}&window_start.lte=${now.toISOString()}` +
     `&limit=${limit}&sort=window_start.desc&apiKey=${MASSIVE_API_KEY}&_t=${Date.now()}`
-
-  console.log(`Fetching ${ticker} desc from ${gte} to ${now.toISOString()}`)
   const res  = await fetch(url, { headers: { 'Cache-Control': 'no-cache' } })
-  if (!res.ok) throw new Error(`Massive ${res.status}: ${await res.text()}`)
+  if (!res.ok) throw new Error(`Massive ${res.status}`)
   const data = await res.json()
-
-  // Reverse so oldest first (ascending order for indicators)
-  const bars = (data.results || []).reverse().map(b => ({
+  return (data.results || []).reverse().map(b => ({
     time: b.window_start / 1e6, open: b.open, high: b.high, low: b.low, close: b.close,
   }))
+}
 
-  if (bars.length > 0) {
-    const last = bars[bars.length - 1]
-    console.log(`Got ${bars.length} bars. Most recent: ${new Date(last.time).toISOString()} close:${last.close}`)
+// ── Market structure bias ─────────────────────────────────────────
+// Detects HH/HL (bullish) or LH/LL (bearish) or mixed (neutral)
+function detectStructure(candles) {
+  if (candles.length < 10) return 'neutral'
+
+  // Find last 4 significant swing points
+  const swings = []
+  for (let i = 2; i < candles.length - 2; i++) {
+    const isHigh = candles[i].high > candles[i-1].high && candles[i].high > candles[i-2].high &&
+                   candles[i].high > candles[i+1].high && candles[i].high > candles[i+2].high
+    const isLow  = candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low &&
+                   candles[i].low < candles[i+1].low && candles[i].low < candles[i+2].low
+    if (isHigh) swings.push({ type: 'high', price: candles[i].high, idx: i })
+    if (isLow)  swings.push({ type: 'low',  price: candles[i].low,  idx: i })
   }
-  return bars
+
+  if (swings.length < 4) return 'neutral'
+
+  // Get last 2 highs and 2 lows
+  const highs = swings.filter(s => s.type === 'high').slice(-2)
+  const lows  = swings.filter(s => s.type === 'low').slice(-2)
+
+  if (highs.length < 2 || lows.length < 2) return 'neutral'
+
+  const hhPattern = highs[1].price > highs[0].price  // higher high
+  const hlPattern = lows[1].price  > lows[0].price   // higher low
+  const lhPattern = highs[1].price < highs[0].price  // lower high
+  const llPattern = lows[1].price  < lows[0].price   // lower low
+
+  if (hhPattern && hlPattern) return 'bullish'
+  if (lhPattern && llPattern) return 'bearish'
+  return 'neutral'
+}
+
+// ── Update bias (called at bar closes) ───────────────────────────
+async function updateBias() {
+  try {
+    const [bars1H, bars4H] = await Promise.all([
+      fetchBars('1h', 50),
+      fetchBars('4h', 30),
+    ])
+
+    const bias1H = detectStructure(bars1H)
+    const bias4H = detectStructure(bars4H)
+
+    // Determine combined bias and threshold
+    let direction = 'both'
+    let threshold = 4
+    let reason    = ''
+
+    if (bias1H === 'bullish' && bias4H === 'bullish') {
+      direction = 'long'; threshold = 4
+      reason = '1H+4H bullish — LONG only, threshold 4'
+    } else if (bias1H === 'bearish' && bias4H === 'bearish') {
+      direction = 'short'; threshold = 4
+      reason = '1H+4H bearish — SHORT only, threshold 4'
+    } else if (bias1H === 'neutral' || bias4H === 'neutral') {
+      direction = 'both'; threshold = 6
+      reason = `Unclear structure (1H:${bias1H} 4H:${bias4H}) — both directions, threshold 6`
+    } else {
+      direction = 'both'; threshold = 7
+      reason = `Conflicting bias (1H:${bias1H} 4H:${bias4H}) — both directions, threshold 7`
+    }
+
+    const bias = { bias1H, bias4H, direction, threshold, reason, updatedAt: Date.now() }
+    await sbSet('bot_log', bias, 'bias')  // store separately
+    console.log(`[BIAS] ${reason}`)
+    return bias
+  } catch (e) {
+    console.error('Bias update failed:', e.message)
+    return { direction: 'both', threshold: 5, bias1H: 'neutral', bias4H: 'neutral' }
+  }
+}
+
+// Load cached bias from Supabase
+async function getBias() {
+  try {
+    const cached = await sbGet('bot_log', 'bias')
+    if (cached?.updatedAt && Date.now() - cached.updatedAt < 6 * 60 * 60 * 1000) {
+      return cached  // use cached if less than 6 hours old
+    }
+  } catch {}
+  return null
+}
+
+// ── Session threshold ─────────────────────────────────────────────
+function getSessionThreshold(baseThreshold) {
+  const hour = new Date().getUTCHours()
+  const isActive = (hour >= 13 && hour < 21) ||  // NY
+                   (hour >= 7  && hour < 12) ||   // London
+                   (hour >= 23 || hour < 4)        // Asian
+  return isActive ? baseThreshold : Math.max(baseThreshold, 6)
 }
 
 // ── Paper broker ──────────────────────────────────────────────────
@@ -94,7 +173,7 @@ async function openTrade(trades, side, price, sl, tp) {
 async function closeTrade(trades, price, reason) {
   const idx = trades.findIndex(t => !t.exitTime)
   if (idx === -1) return
-  const t = trades[idx]
+  const t   = trades[idx]
   const pnl = (t.side === 'LONG' ? price - t.entryPrice : t.entryPrice - price) * MULTIPLIER
   trades[idx] = { ...t, exitTime: Date.now(), exitPrice: price, exitReason: reason, pnlDollars: pnl }
   await sbSet('paper_trades', trades)
@@ -186,8 +265,10 @@ async function log(type, msg, detail = null) {
   console.log(`[${type.toUpperCase()}] ${msg}${detail ? ' — ' + detail : ''}`)
   try {
     const existing = await sbGet('bot_log') || []
-    existing.unshift({ type, message: msg, detail, time: new Date().toISOString() })
-    await sbSet('bot_log', existing.slice(0, 200))
+    if (Array.isArray(existing)) {
+      existing.unshift({ type, message: msg, detail, time: new Date().toISOString() })
+      await sbSet('bot_log', existing.slice(0, 200))
+    }
   } catch {}
 }
 
@@ -207,7 +288,8 @@ function calcATR(candles, period = 14) {
 
 // ── Main cycle ────────────────────────────────────────────────────
 async function runCycle() {
-  console.log(`\n⏰ ${new Date().toISOString()}`)
+  const now = new Date()
+  console.log(`\n⏰ ${now.toISOString()}`)
 
   const strategy = await sbGet('active_strategy')
   if (!strategy?.signalBody) {
@@ -215,10 +297,27 @@ async function runCycle() {
     return
   }
 
+  // ── Update bias at bar closes ────────────────────────────────────
+  const min = now.getUTCMinutes()
+  const hr  = now.getUTCHours()
+  let bias  = await getBias()
+
+  // Recalculate at top of each hour (or if no cached bias)
+  if (!bias || (min < 6)) {
+    console.log('Recalculating HTF bias...')
+    bias = await updateBias()
+  }
+
+  console.log(`[BIAS] 1H:${bias.bias1H} 4H:${bias.bias4H} → ${bias.direction.toUpperCase()} threshold:${bias.threshold}`)
+
+  // Fetch 5min bars for signal
   let candles
   try {
-    candles = await fetchRecentBars(300)
+    const bars5m = await fetchBars('5min', 300)
+    candles = bars5m
     if (candles.length < 20) { console.log('Not enough bars'); return }
+    const last = candles[candles.length - 1]
+    console.log(`Got ${candles.length} bars. Most recent: ${new Date(last.time).toISOString()} close:${last.close}`)
   } catch (e) {
     await log('error', 'Bar fetch failed', e.message); return
   }
@@ -228,21 +327,11 @@ async function runCycle() {
 
   const ind = buildIndicators(candles)
   const li  = candles.length - 1
-  const indLog = [
-    `sweepLow:${ind.liquiditySweepLow[li]}`,
-    `sweepHigh:${ind.liquiditySweepHigh[li]}`,
-    `fvgBull:${ind.bullishFVG[li]}`,
-    `fvgBear:${ind.bearishFVG[li]}`,
-    `bosBull:${ind.bosBullish[li]}`,
-    `bosBear:${ind.bosBearish[li]}`,
-    `obBull:${ind.rejectionBlockBullish[li]}`,
-    `obBear:${ind.rejectionBlockBearish[li]}`,
-  ].join(' | ')
-  console.log(`[INDICATORS] ${indLog}`)
+  console.log(`[INDICATORS] sweepLow:${ind.liquiditySweepLow[li]} | sweepHigh:${ind.liquiditySweepHigh[li]} | fvgBull:${ind.bullishFVG[li]} | fvgBear:${ind.bearishFVG[li]} | bosBull:${ind.bosBullish[li]} | bosBear:${ind.bosBearish[li]} | obBull:${ind.rejectionBlockBullish[li]} | obBear:${ind.rejectionBlockBearish[li]}`)
 
+  // Check open position SL/TP
   const trades  = await getTrades()
   const openPos = getOpenPos(trades)
-
   if (openPos) {
     if (openPos.stopLoss && (openPos.side === 'LONG' ? currentPrice <= openPos.stopLoss : currentPrice >= openPos.stopLoss)) {
       await closeTrade(trades, currentPrice, 'stopLoss'); return
@@ -252,6 +341,7 @@ async function runCycle() {
     }
   }
 
+  // Evaluate signal
   const signal = evalSignal(candles, ind, strategy.signalBody, openPos)
   await log('signal', `Signal: ${signal?.action || 'NONE'}`, signal?.reason || null)
 
@@ -265,21 +355,40 @@ async function runCycle() {
   const isSell = signal.action === 'sell' || signal.action === 'SHORT'
 
   if ((isBuy || isSell) && !openPos) {
-    const allowed = await canTrade(signal.factors || {})
-    if (!allowed) { await log('filter', `⛔ BLOCKED ${signal.action}`); return }
 
-    const a  = calcATR(candles)
-    const sl = isBuy  ? currentPrice - a * 1.5 : currentPrice + a * 1.5
-    const tp = isBuy  ? currentPrice + a * 3.0 : currentPrice - a * 3.0
-    const side = isBuy ? 'LONG' : 'SHORT'
+    // ── Bias filter ────────────────────────────────────────────────
+    if (bias.direction === 'long'  && isSell) {
+      await log('filter', `⛔ BLOCKED SHORT — bias is BULLISH (1H:${bias.bias1H} 4H:${bias.bias4H})`); return
+    }
+    if (bias.direction === 'short' && isBuy) {
+      await log('filter', `⛔ BLOCKED LONG — bias is BEARISH (1H:${bias.bias1H} 4H:${bias.bias4H})`); return
+    }
+
+    // ── Session-aware threshold ────────────────────────────────────
+    const sessionThreshold = getSessionThreshold(bias.threshold)
+    if (sessionThreshold !== bias.threshold) {
+      console.log(`[THRESHOLD] Offhours — raised from ${bias.threshold} to ${sessionThreshold}`)
+    }
+
+    // ── Learning filter ────────────────────────────────────────────
+    const allowed = await canTrade(signal.factors || {})
+    if (!allowed) { await log('filter', `⛔ BLOCKED — negative expectancy`); return }
+
+    const a    = calcATR(candles)
+    const sl   = isBuy  ? currentPrice - a * 1.5 : currentPrice + a * 1.5
+    const tp   = isBuy  ? currentPrice + a * 3.0 : currentPrice - a * 3.0
+    const side = isBuy  ? 'LONG' : 'SHORT'
+
     await openTrade(trades, side, currentPrice, sl, tp)
-    await log('trade', `Opened ${side} @ ${currentPrice}`, `SL:${sl.toFixed(2)} TP:${tp.toFixed(2)}`)
+    await log('trade', `Opened ${side} @ ${currentPrice}`,
+      `SL:${sl.toFixed(2)} TP:${tp.toFixed(2)} | bias:${bias.direction} | session threshold:${sessionThreshold}`)
   }
 }
 
 // ── Start ─────────────────────────────────────────────────────────
-console.log('🤖 TradingBot — Railway 24/7')
+console.log('🤖 TradingBot — Railway 24/7 with HTF Bias')
 console.log(`   Polling every ${POLL_MS/60000} minutes`)
+console.log(`   HTF bias updates every hour`)
 
 process.on('SIGTERM', () => console.log('SIGTERM ignored'))
 process.on('SIGINT',  () => console.log('SIGINT ignored'))

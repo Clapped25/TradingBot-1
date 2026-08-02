@@ -9,6 +9,7 @@ import { generatePineScript } from '../pineScriptExporter'
 import { shouldTakeTrade, recordLiveTrade, getSession, SESSION_LABELS } from '../tradeMemory'
 import { calcDynamicRisk } from '../riskEngine'
 import TradeChart from './TradeChart'
+import IVWallsPanel from './IVWallsPanel'
 
 // Primary trading symbol and reference for SMT
 const PRIMARY   = 'NQ'   // using NQ for signal (strategy is NQ-based)
@@ -472,7 +473,9 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
           )}
         </div>
       </div>
-
+      <div style={{ marginBottom: 12 }}>
+        <IVWallsPanel livePrice={livePrice} />
+      </div>
       {/* Tabs */}
       <div className="row" style={{ gap: 8, marginBottom: 12 }}>
         {[['trade', '⚡ Trade'], ['chart', '📈 Chart'], ['analysis', '🔍 Analysis'], ['history', `📋 History (${closedTrades.length})`], ['pine', '📉 Pine Script']].map(([t, label]) => (

@@ -10,6 +10,7 @@ import { shouldTakeTrade, recordLiveTrade, getSession, SESSION_LABELS } from '..
 import { calcDynamicRisk } from '../riskEngine'
 import TradeChart from './TradeChart'
 import IVWallsPanel from './IVWallsPanel'
+import EvalDashboard from './EvalDashboard'
 
 // Primary trading symbol and reference for SMT
 const PRIMARY   = 'NQ'   // using NQ for signal (strategy is NQ-based)
@@ -375,6 +376,9 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
           </div>
         </div>
       )}
+
+      {/* Eval Dashboard */}
+      <EvalDashboard />
 
       {/* Account + Price row */}
       <div className="grid2" style={{ gap: 12, marginBottom: 12 }}>

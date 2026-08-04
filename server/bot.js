@@ -15,6 +15,14 @@ const MULTIPLIER      = 2   // MNQ = $2 per point
 const POLL_MS         = 5 * 60 * 1000
 const BASE_RISK_PCT   = 1   // risk 1% of account per trade
 
+// ── Eval Mode Config ──────────────────────────────────────────────
+const EVAL_MODE         = true    // set false when on real funded account
+const EVAL_ACCOUNT_SIZE = 25000
+const EVAL_PROFIT_TARGET = 1250   // +$1,250 to pass
+const EVAL_MAX_DRAWDOWN  = 1000   // -$1,000 blows account
+const EVAL_DAILY_LIMIT   = 600    // stop trading at -$600/day (buffer before $1k limit)
+const EVAL_MAX_CONTRACTS = 2      // cap contracts during eval
+
 // ── Supabase ──────────────────────────────────────────────────────
 const SB_HEADERS = {
   'Content-Type':  'application/json',
@@ -144,8 +152,13 @@ async function calcDynamicRisk(candles, side, currentPrice, factors, accountBala
   const riskDollars = accountBalance * (BASE_RISK_PCT / 100) * riskMult
   const rawContracts = Math.max(1, Math.round(riskDollars / (stopDistance * MULTIPLIER)))
   // Cap at 2 contracts until 30+ backtests, 3 until 50+, then uncapped
-  const maxContracts = sampleSize >= 50 ? 6 : sampleSize >= 30 ? 3 : 2
-  const contracts    = Math.min(rawContracts, maxContracts)
+  // During eval cap at 2, reduce to 1 if daily loss mounting
+  let maxContracts = sampleSize >= 50 ? 6 : sampleSize >= 30 ? 3 : 2
+  if (EVAL_MODE) {
+    const evalS = await getEvalStats()
+    maxContracts = evalS.todayPnl <= -300 ? 1 : EVAL_MAX_CONTRACTS
+  }
+  const contracts = Math.min(rawContracts, maxContracts)
 
   console.log(`[RISK] ATR:${atrVal.toFixed(1)} stop:${stopDistance}pts RR:${rrRatio} contracts:${contracts} winRate:${winRate}% n:${sampleSize} riskMult:${riskMult}`)
 
@@ -384,6 +397,46 @@ async function log(type, msg, detail = null) {
   }
 }
 
+
+// ── Eval Stats ────────────────────────────────────────────────────
+async function getEvalStats() {
+  const trades  = await getTrades()
+  const account = await getAccount()
+  const closed  = trades.filter(t => t.exitTime && t.pnlDollars !== null)
+
+  // Total profit from starting balance
+  const totalProfit   = account.balance - EVAL_ACCOUNT_SIZE
+  const totalDrawdown = Math.min(0, totalProfit)
+
+  // Today's P&L
+  const todayStart = new Date()
+  todayStart.setUTCHours(0, 0, 0, 0)
+  const todayTrades = closed.filter(t => t.exitTime >= todayStart.getTime())
+  const todayPnl    = todayTrades.reduce((s, t) => s + (t.pnlDollars || 0), 0)
+
+  // Progress to target
+  const progressPct = +((totalProfit / EVAL_PROFIT_TARGET) * 100).toFixed(1)
+  const drawdownPct = +((Math.abs(totalDrawdown) / EVAL_MAX_DRAWDOWN) * 100).toFixed(1)
+  const drawdownLeft = EVAL_MAX_DRAWDOWN + totalDrawdown  // how much left before blown
+
+  // Save stats to Supabase for Vercel display
+  const stats = {
+    totalProfit, totalDrawdown, todayPnl,
+    progressPct, drawdownPct, drawdownLeft,
+    balance: account.balance,
+    target: EVAL_PROFIT_TARGET,
+    maxDrawdown: EVAL_MAX_DRAWDOWN,
+    dailyLimit: EVAL_DAILY_LIMIT,
+    passed: totalProfit >= EVAL_PROFIT_TARGET,
+    blown:  totalDrawdown <= -EVAL_MAX_DRAWDOWN,
+    updatedAt: Date.now(),
+  }
+
+  try { await sbSet('bot_stats', { ...await sbGet('bot_stats') || {}, eval: stats }, 'main') } catch {}
+
+  return stats
+}
+
 // ── Main cycle ────────────────────────────────────────────────────
 async function runCycle() {
   const now = new Date()
@@ -407,6 +460,12 @@ async function runCycle() {
 
   const currentPrice = candles[candles.length - 1].close
   await log('price', `${PRIMARY}: ${currentPrice}`)
+
+  // Log eval status every cycle
+  if (EVAL_MODE) {
+    const evalStats = await getEvalStats()
+    console.log(`[EVAL] Profit: $${evalStats.totalProfit.toFixed(0)}/${EVAL_PROFIT_TARGET} (${evalStats.progressPct}%) | Drawdown left: $${evalStats.drawdownLeft.toFixed(0)} | Today: ${evalStats.todayPnl >= 0 ? '+' : ''}$${evalStats.todayPnl.toFixed(0)}`)
+  }
 
   // Update bias (recompute every hour using same bars)
   let bias = await getBias()
@@ -487,6 +546,34 @@ async function runCycle() {
   const isSell = signal.action === 'sell' || signal.action === 'SHORT'
 
   if ((isBuy || isSell) && !openPos) {
+    // ── Eval mode risk check ──────────────────────────────────────
+    if (EVAL_MODE) {
+      const evalStats = await getEvalStats()
+
+      // Check total drawdown
+      if (evalStats.totalDrawdown <= -EVAL_MAX_DRAWDOWN + 100) {
+        await log('eval', `⛔ EVAL ACCOUNT BLOWN — drawdown $${evalStats.totalDrawdown.toFixed(0)} hit limit`)
+        return
+      }
+
+      // Check daily loss limit
+      if (evalStats.todayPnl <= -EVAL_DAILY_LIMIT) {
+        await log('eval', `⛔ DAILY LIMIT HIT — lost $${Math.abs(evalStats.todayPnl).toFixed(0)} today, no more trades`)
+        return
+      }
+
+      // Check if already passed
+      if (evalStats.totalProfit >= EVAL_PROFIT_TARGET) {
+        await log('eval', `🎉 EVAL PASSED — profit $${evalStats.totalProfit.toFixed(0)} hit target $${EVAL_PROFIT_TARGET}`)
+        return  // stop trading once passed
+      }
+
+      // Reduce size if daily loss is mounting
+      if (evalStats.todayPnl <= -300) {
+        console.log(`[EVAL] Daily loss $${evalStats.todayPnl.toFixed(0)} — dropping to 1 contract`)
+      }
+    }
+
     // 0. IV Wall filter — don't fight the walls
     if (walls) {
       if (isBuy  && walls.wallBias === 'nearUpper') {

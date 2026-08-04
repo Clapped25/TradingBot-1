@@ -404,9 +404,13 @@ async function getEvalStats() {
   const account = await getAccount()
   const closed  = trades.filter(t => t.exitTime && t.pnlDollars !== null)
 
-  // Total profit from starting balance
+  // Trailing EOD drawdown — floor moves up as balance grows
+  // Peak EOD balance = highest EOD balance recorded
+  const peakBalance   = stats?.peakEodBalance || EVAL_ACCOUNT_SIZE
+  const currentFloor  = peakBalance - EVAL_MAX_DRAWDOWN
   const totalProfit   = account.balance - EVAL_ACCOUNT_SIZE
-  const totalDrawdown = Math.min(0, totalProfit)
+  const drawdownUsed  = Math.max(0, currentFloor - account.balance)  // how much below floor
+  const totalDrawdown = -drawdownUsed
 
   // Today's P&L
   const todayStart = new Date()
@@ -415,9 +419,9 @@ async function getEvalStats() {
   const todayPnl    = todayTrades.reduce((s, t) => s + (t.pnlDollars || 0), 0)
 
   // Progress to target
-  const progressPct = +((totalProfit / EVAL_PROFIT_TARGET) * 100).toFixed(1)
-  const drawdownPct = +((Math.abs(totalDrawdown) / EVAL_MAX_DRAWDOWN) * 100).toFixed(1)
-  const drawdownLeft = EVAL_MAX_DRAWDOWN + totalDrawdown  // how much left before blown
+  const progressPct  = +((totalProfit / EVAL_PROFIT_TARGET) * 100).toFixed(1)
+  const drawdownPct  = +((drawdownUsed / EVAL_MAX_DRAWDOWN) * 100).toFixed(1)
+  const drawdownLeft = EVAL_MAX_DRAWDOWN - drawdownUsed  // how much left before blown
 
   // Save stats to Supabase for Vercel display
   const stats = {
@@ -635,6 +639,25 @@ process.on('unhandledRejection', e => console.error('Unhandled:', e?.message || 
 
 runCycle()
 setInterval(runCycle, POLL_MS)
+
+// Record EOD balance at midnight ET (4am UTC) to update trailing floor
+setInterval(async () => {
+  const now = new Date()
+  if (now.getUTCHours() === 4 && now.getUTCMinutes() < 6) {
+    try {
+      const account = await getAccount()
+      const stats   = await sbGet('bot_stats', 'main') || {}
+      const evalS   = stats.eval || {}
+      const currentPeak = evalS.peakEodBalance || EVAL_ACCOUNT_SIZE
+      if (account.balance > currentPeak) {
+        evalS.peakEodBalance = account.balance
+        stats.eval = evalS
+        await sbSet('bot_stats', stats, 'main')
+        console.log(`[EVAL] EOD peak updated to $${account.balance.toFixed(0)} — new floor: $${(account.balance - EVAL_MAX_DRAWDOWN).toFixed(0)}`)
+      }
+    } catch (e) { console.error('EOD update error:', e.message) }
+  }
+}, 60_000)
 setInterval(() => console.log('💓 heartbeat'), 30_000)
 
 // ── IV Walls / Historical Volatility ─────────────────────────────

@@ -119,7 +119,7 @@ export default function EvalDashboard() {
             color: drawPct > 70 ? 'var(--red)' : drawPct > 40 ? 'var(--amber)' : 'var(--green)',
             fontWeight: 700
           }}>
-            ${Math.abs(stats.totalDrawdown).toFixed(0)} / $1,000
+            ${stats.drawdownUsed?.toFixed(0) || Math.abs(stats.totalDrawdown).toFixed(0)} / $1,000
           </span>
         </div>
         <div style={{ height: 12, background: 'var(--surface)', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)' }}>
@@ -131,7 +131,7 @@ export default function EvalDashboard() {
           }} />
         </div>
         <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
-          ${stats.drawdownLeft.toFixed(0)} remaining before account blown
+          ${stats.drawdownLeft.toFixed(0)} remaining · Floor: $${stats.currentFloor?.toFixed(0) || '24,000'} · Peak EOD: $${stats.peakEodBalance?.toFixed(0) || '25,000'}
         </div>
       </div>
 

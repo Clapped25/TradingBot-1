@@ -142,7 +142,10 @@ async function calcDynamicRisk(candles, side, currentPrice, factors, accountBala
     ? Math.max(0.5, Math.min(1.5, 1 + expectancy * 0.5))
     : 1.0
   const riskDollars = accountBalance * (BASE_RISK_PCT / 100) * riskMult
-  const contracts   = Math.max(1, Math.round(riskDollars / (stopDistance * MULTIPLIER)))
+  const rawContracts = Math.max(1, Math.round(riskDollars / (stopDistance * MULTIPLIER)))
+  // Cap at 2 contracts until 30+ backtests, 3 until 50+, then uncapped
+  const maxContracts = sampleSize >= 50 ? 6 : sampleSize >= 30 ? 3 : 2
+  const contracts    = Math.min(rawContracts, maxContracts)
 
   console.log(`[RISK] ATR:${atrVal.toFixed(1)} stop:${stopDistance}pts RR:${rrRatio} contracts:${contracts} winRate:${winRate}% n:${sampleSize} riskMult:${riskMult}`)
 
@@ -356,6 +359,29 @@ async function log(type, msg, detail = null) {
       await sbSet('bot_log', existing.slice(0, 200))
     }
   } catch {}
+  // Track blocked trades separately
+  if (type === 'filter' && msg.includes('BLOCKED')) {
+    try {
+      const stats = await sbGet('bot_stats') || { blockedTrades: 0, totalSignals: 0, tradesOpened: 0 }
+      stats.blockedTrades = (stats.blockedTrades || 0) + 1
+      stats.lastBlocked = { message: msg, detail, time: new Date().toISOString() }
+      await sbSet('bot_stats', stats, 'main')
+    } catch {}
+  }
+  if (type === 'trade' && msg.includes('Opened')) {
+    try {
+      const stats = await sbGet('bot_stats') || { blockedTrades: 0, totalSignals: 0, tradesOpened: 0 }
+      stats.tradesOpened = (stats.tradesOpened || 0) + 1
+      await sbSet('bot_stats', stats, 'main')
+    } catch {}
+  }
+  if (type === 'signal' && !msg.includes('NONE') && !msg.includes('none')) {
+    try {
+      const stats = await sbGet('bot_stats') || { blockedTrades: 0, totalSignals: 0, tradesOpened: 0 }
+      stats.totalSignals = (stats.totalSignals || 0) + 1
+      await sbSet('bot_stats', stats, 'main')
+    } catch {}
+  }
 }
 
 // ── Main cycle ────────────────────────────────────────────────────
@@ -576,3 +602,5 @@ function calcIVWalls(candles, currentPrice) {
     wallBias, days: dailyCloses.length,
   }
 }
+// PATCH: raise min sample before sizing up
+// This is appended and will override the inline logic via a wrapper

@@ -400,13 +400,15 @@ async function log(type, msg, detail = null) {
 
 // ── Eval Stats ────────────────────────────────────────────────────
 async function getEvalStats() {
-  const trades  = await getTrades()
-  const account = await getAccount()
-  const closed  = trades.filter(t => t.exitTime && t.pnlDollars !== null)
+  const trades    = await getTrades()
+  const account   = await getAccount()
+  const closed    = trades.filter(t => t.exitTime && t.pnlDollars !== null)
+  const botStats  = await sbGet('bot_stats', 'main') || {}
+  const prevEval  = botStats.eval || {}
 
   // Trailing EOD drawdown — floor moves up as balance grows
   // Peak EOD balance = highest EOD balance recorded
-  const peakBalance   = stats?.peakEodBalance || EVAL_ACCOUNT_SIZE
+  const peakBalance   = prevEval.peakEodBalance || EVAL_ACCOUNT_SIZE
   const currentFloor  = peakBalance - EVAL_MAX_DRAWDOWN
   const totalProfit   = account.balance - EVAL_ACCOUNT_SIZE
   const drawdownUsed  = Math.max(0, currentFloor - account.balance)  // how much below floor

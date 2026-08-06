@@ -54,9 +54,15 @@ export function calcDynamicRisk({
 
   // ── Step 3: Contracts from adjusted risk + ATR ────────────────
   const dollarPerPoint = spec.multiplier
-  const rawContracts   = adjustedRisk / (stopDist * dollarPerPoint)
-  const contracts      = Math.max(1, Math.min(6, Math.round(rawContracts)))
-  const actualRisk     = +(contracts * stopDist * dollarPerPoint).toFixed(2)
+  const rawContracts    = adjustedRisk / (stopDist * dollarPerPoint)
+  const baseContracts   = Math.max(1, Math.min(6, Math.round(rawContracts)))
+  const baseRisk        = +(baseContracts * stopDist * dollarPerPoint).toFixed(2)
+
+  // Hard cap — never lose more than $500 regardless of ATR or score
+  const contracts       = baseRisk > 500
+    ? Math.max(1, Math.floor(500 / (stopDist * dollarPerPoint)))
+    : baseContracts
+  const actualRisk      = +(contracts * stopDist * dollarPerPoint).toFixed(2)
 
   // ── Step 4: Stop and target prices ───────────────────────────
   const stopPrice   = side === 'LONG'

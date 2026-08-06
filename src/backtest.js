@@ -117,13 +117,13 @@ export function createBacktestEngine(config = {}) {
       openLow = Math.min(openLow, c.low)
 
       const entry = trades[trades.length - 1]
-      // UPDATE 5: Move stop to breakeven at 1R (no partial close)
+         // UPDATE 5: Move stop to breakeven at 1.5R (more room)
       if (!entry.breakevenSet) {
         const stopDist = entry.price - entry.stopPrice
-        const oneR = entry.price + stopDist
-        if (c.high >= oneR) {
+        const onePointFiveR = entry.price + (stopDist * 1.5)
+        if (c.high >= onePointFiveR) {
           entry.breakevenSet = true
-          entry.stopPrice = entry.price  // just move stop, keep full position
+          entry.stopPrice = entry.price
         }
       }
 
@@ -149,7 +149,7 @@ export function createBacktestEngine(config = {}) {
     // ── UPDATE 5: Signal quality checks ──────────────────────────
     if (result.factors?.liquiditySweep) {
       const atrU5 = calcATRBacktest(candles, i)
-      const minSweep = Math.min(20, atrU5 * 0.15)
+      const minSweep = Math.min(20, atrU5 * 0.08)
       let sweepDist = 0
       for (let k = i; k >= Math.max(0, i-8); k--) {
         if (indicators.liquiditySweepLow?.[k]) {
@@ -161,7 +161,7 @@ export function createBacktestEngine(config = {}) {
       }
       if (sweepDist > 0 && sweepDist < minSweep) return null
 
-      const minMove = Math.max(5, atrU5 * 0.1)
+      const minMove = Math.max(3, atrU5 * 0.05)
       let maxMove = 0
       for (let k = i; k >= Math.max(0, i-8); k--) {
         if (indicators.liquiditySweepLow?.[k] || indicators.liquiditySweepHigh?.[k]) {

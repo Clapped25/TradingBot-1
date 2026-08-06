@@ -529,6 +529,30 @@ async function runCycle() {
     }
 
     // Log current P&L on open position
+    // Time-based exit
+  if (openPos) {
+    const barsOpen   = Math.floor((Date.now() - openPos.entryTime) / (5 * 60 * 1000))
+    const stopDist   = Math.abs(openPos.entryPrice - openPos.stopLoss)
+    const currentR   = stopDist > 0 ? (currentPrice - openPos.entryPrice) / stopDist : 0
+    const recentData = candles.slice(-20)
+    const recentHigh = Math.max(...recentData.map(b => b.high))
+
+    if (barsOpen > 30 && currentR < 0.25) {
+      await closeTrade(trades, currentPrice, 'Time exit: 30 bars no progress')
+      await log('trade', `Time exit @ ${currentPrice}`, `${barsOpen} bars open, only ${currentR.toFixed(2)}R`)
+      return
+    }
+    if (barsOpen > 50 && recentHigh <= (openPos.entryPrice + stopDist * 0.5)) {
+      await closeTrade(trades, currentPrice, 'Time exit: 50 bars stalling')
+      await log('trade', `Time exit @ ${currentPrice}`, `${barsOpen} bars, price stalling`)
+      return
+    }
+    if (barsOpen > 75) {
+      await closeTrade(trades, currentPrice, 'Time exit: 75 bars max')
+      await log('trade', `Time exit @ ${currentPrice}`, `Max hold time reached`)
+      return
+    }
+  }
     const pts = openPos.side === 'LONG'
       ? price - openPos.entryPrice
       : openPos.entryPrice - price

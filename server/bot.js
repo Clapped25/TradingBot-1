@@ -96,7 +96,9 @@ function calcATR(candles, period = 14) {
   return sum / period
 }
 
-async function calcDynamicRisk(candles, side, currentPrice, factors, accountBalance, signalScore = 4) {
+// ── Dynamic risk engine ───────────────────────────────────────────
+// Adjusts contracts and RR based on win probability from learning memory
+async function calcDynamicRisk(candles, side, currentPrice, factors, accountBalance) {
   const atrVal = calcATR(candles)
 
   // Get win stats from learning memory
@@ -122,22 +124,20 @@ async function calcDynamicRisk(candles, side, currentPrice, factors, accountBala
     }
   } catch (e) { console.error('Risk memory error:', e.message) }
 
-  // ── Combined: Quality Score + Fixed Dollar Risk + ATR Scaling ────
-  const BASE_RISK = 400
-  const score = signalScore || 4
-  const scoreMultiplier = score <= 3 ? 0.5
-    : score === 4 ? 0.75
-    : score === 5 ? 1.0
-    : 1.25
+  // ATR-based stop distance (1.5x ATR gives trade room to breathe)
+  const stopDistance = +(atrVal * 1.5).toFixed(2)
 
-  const adjustedRisk   = Math.round(BASE_RISK * scoreMultiplier)
-  const stopDistance   = +atrVal.toFixed(2)
-  const targetDistance = +(atrVal * 2).toFixed(2)
-  const dollarPerPoint = 2  // MNQ
-  const rawContracts   = adjustedRisk / (stopDistance * dollarPerPoint)
-  const contracts      = Math.max(1, Math.min(6, Math.round(rawContracts)))
-  const actualRisk     = +(contracts * stopDistance * dollarPerPoint).toFixed(2)
+  // Win-rate adjusted RR target
+  // If win rate is high → can aim for smaller RR (target is more achievable)
+  // If win rate is low  → need bigger RR to be profitable
+  const winFrac   = Math.max(0.3, Math.min(0.8, winRate / 100))
+  const minRR     = +((1 - winFrac) / winFrac).toFixed(2)  // break-even RR
+  const edgeBonus = confidence * 1.5  // up to +1.5R when fully confident
+  const rrRatio   = +Math.max(1.5, Math.min(4.0, minRR + edgeBonus)).toFixed(2)
 
+  const targetDistance = +(stopDistance * rrRatio).toFixed(2)
+
+  // Exact SL and TP prices
   const stopPrice   = side === 'LONG'
     ? +(currentPrice - stopDistance).toFixed(2)
     : +(currentPrice + stopDistance).toFixed(2)
@@ -145,11 +145,25 @@ async function calcDynamicRisk(candles, side, currentPrice, factors, accountBala
     ? +(currentPrice + targetDistance).toFixed(2)
     : +(currentPrice - targetDistance).toFixed(2)
 
-  console.log(`[RISK] Score:${score}(${scoreMultiplier}x) ATR:${atrVal.toFixed(1)} risk:$${adjustedRisk} contracts:${contracts} SL:${stopPrice} TP:${targetPrice}`)
+  // Position sizing — risk X% of account, scaled by expectancy
+  const riskMult    = sampleSize >= 8
+    ? Math.max(0.5, Math.min(1.5, 1 + expectancy * 0.5))
+    : 1.0
+  const riskDollars = accountBalance * (BASE_RISK_PCT / 100) * riskMult
+  const rawContracts = Math.max(1, Math.round(riskDollars / (stopDistance * MULTIPLIER)))
+  // Cap at 2 contracts until 30+ backtests, 3 until 50+, then uncapped
+  // During eval cap at 2, reduce to 1 if daily loss mounting
+  let maxContracts = sampleSize >= 50 ? 6 : sampleSize >= 30 ? 3 : 2
+  if (EVAL_MODE) {
+    const evalS = await getEvalStats()
+    maxContracts = evalS.todayPnl <= -300 ? 1 : EVAL_MAX_CONTRACTS
+  }
+  const contracts = Math.min(rawContracts, maxContracts)
 
-  return { stopPrice, targetPrice, stopDistance, targetDistance, contracts, riskDollars: actualRisk, winRate, expectancy, sampleSize }
+  console.log(`[RISK] ATR:${atrVal.toFixed(1)} stop:${stopDistance}pts RR:${rrRatio} contracts:${contracts} winRate:${winRate}% n:${sampleSize} riskMult:${riskMult}`)
+
+  return { stopPrice, targetPrice, stopDistance, targetDistance, rrRatio, contracts, winRate, expectancy, sampleSize }
 }
-
 
 // ── Market structure detection ────────────────────────────────────
 function detectStructure(candles) {
@@ -514,7 +528,6 @@ async function runCycle() {
       }
     }
 
-    // Log current P&L on open position
     // Time-based exit
   if (openPos) {
     const barsOpen   = Math.floor((Date.now() - openPos.entryTime) / (5 * 60 * 1000))
@@ -539,6 +552,8 @@ async function runCycle() {
       return
     }
   }
+
+  // Log current P&L on open position
     const pts = openPos.side === 'LONG'
       ? price - openPos.entryPrice
       : openPos.entryPrice - price
@@ -593,12 +608,14 @@ async function runCycle() {
 
     // 0. IV Wall filter — don't fight the walls
     if (walls) {
-      if (isBuy  && walls.wallBias === 'nearUpper') {
-        await log('filter', `⛔ BLOCKED LONG — price near upper IV wall (${walls.pctToUpper}% remaining)`)
+      if (isBuy && walls.wallBias === 'nearUpper') {
+        const level = walls.nearestResistance
+        await log('filter', `⛔ BLOCKED LONG — near ${level?.label || 'resistance'} @ ${level?.price} (${walls.distToResistance}pts away)`)
         return
       }
       if (isSell && walls.wallBias === 'nearLower') {
-        await log('filter', `⛔ BLOCKED SHORT — price near lower IV wall (${walls.pctToLower}% remaining)`)
+        const level = walls.nearestSupport
+        await log('filter', `⛔ BLOCKED SHORT — near ${level?.label || 'support'} @ ${level?.price} (${walls.distToSupport}pts away)`)
         return
       }
     }
@@ -623,7 +640,7 @@ async function runCycle() {
     // 4. Dynamic risk calculation
     const side    = isBuy ? 'LONG' : 'SHORT'
     const account = await getAccount()
-    const risk = await calcDynamicRisk(candles, side, currentPrice, signal.factors || {}, account.balance, signal.score || 4)
+    const risk    = await calcDynamicRisk(candles, side, currentPrice, signal.factors || {}, account.balance)
 
     // 5. Open trade
     await openTrade(trades, {
@@ -673,57 +690,127 @@ setInterval(async () => {
 }, 60_000)
 setInterval(() => console.log('💓 heartbeat'), 30_000)
 
-// ── IV Walls / Historical Volatility ─────────────────────────────
-// Calculates tomorrow's probable price range from recent daily moves.
-// Used to filter trades — avoid longs at upper wall, shorts at lower wall.
+// ── IV Walls — Intraday Range + Key Levels ──────────────────────
+// Option B: Intraday walls from today's open (tighter, more relevant)
+// Option C: Key levels from yesterday's high/low and weekly high/low
 
 function calcIVWalls(candles, currentPrice) {
-  // Group 5min bars into daily closes
+  if (!candles.length) return null
+
+  const now = new Date()
+  const todayDate = now.toISOString().slice(0, 10)
+
+  // ── Group bars by day ─────────────────────────────────────────
   const days = {}
   for (const bar of candles) {
     const date = new Date(bar.time).toISOString().slice(0, 10)
-    if (!days[date]) days[date] = { close: bar.close }
-    days[date].close = bar.close  // keep last bar's close
-  }
-  const dailyCloses = Object.values(days).map(d => d.close)
-  if (dailyCloses.length < 6) return null
-
-  // Log returns
-  const returns = []
-  for (let i = 1; i < dailyCloses.length; i++) {
-    returns.push(Math.log(dailyCloses[i] / dailyCloses[i-1]))
+    if (!days[date]) days[date] = { open: bar.open, high: bar.high, low: bar.low, close: bar.close, bars: [] }
+    days[date].high  = Math.max(days[date].high, bar.high)
+    days[date].low   = Math.min(days[date].low,  bar.low)
+    days[date].close = bar.close
+    days[date].bars.push(bar)
   }
 
-  // 20-day or available HV
-  const period  = Math.min(20, returns.length)
-  const slice   = returns.slice(-period)
-  const mean    = slice.reduce((s,r) => s + r, 0) / slice.length
-  const variance = slice.reduce((s,r) => s + Math.pow(r - mean, 2), 0) / (slice.length - 1)
-  const hv      = Math.sqrt(variance) * Math.sqrt(252)
+  const sortedDays = Object.entries(days).sort((a,b) => a[0].localeCompare(b[0]))
+  const today      = days[todayDate]
+  const yesterday  = sortedDays.length >= 2 ? sortedDays[sortedDays.length - 2][1] : null
 
-  const dailyMove   = currentPrice * (hv / Math.sqrt(252))
-  const upper1sigma = +(currentPrice + dailyMove).toFixed(2)
-  const lower1sigma = +(currentPrice - dailyMove).toFixed(2)
-  const upper2sigma = +(currentPrice + dailyMove * 2).toFixed(2)
-  const lower2sigma = +(currentPrice - dailyMove * 2).toFixed(2)
+  // ── Option B: Intraday walls from today's open ────────────────
+  let intradayUpper = null, intradayLower = null
+  let intradayBias  = 'neutral'
 
-  // How close is price to each wall? (0-100%)
-  const pctToUpper = +((upper1sigma - currentPrice) / dailyMove * 100).toFixed(1)
-  const pctToLower = +((currentPrice - lower1sigma) / dailyMove * 100).toFixed(1)
+  if (today) {
+    // Use average daily range from last 5 days as expected move
+    const recentDays = sortedDays.slice(-6, -1)  // last 5 days excluding today
+    const avgRange   = recentDays.length > 0
+      ? recentDays.reduce((s, [,d]) => s + (d.high - d.low), 0) / recentDays.length
+      : 200
 
-  // Wall bias — affects trade direction preference
-  let wallBias = 'neutral'
-  if (pctToUpper < 20) wallBias = 'nearUpper'  // near ceiling → prefer shorts
-  if (pctToLower < 20) wallBias = 'nearLower'  // near floor  → prefer longs
+    intradayUpper = +(today.open + avgRange).toFixed(2)
+    intradayLower = +(today.open - avgRange).toFixed(2)
 
-  return {
-    hv: +(hv * 100).toFixed(2),
-    dailyMove: +dailyMove.toFixed(2),
-    upper1sigma, lower1sigma,
-    upper2sigma, lower2sigma,
-    pctToUpper, pctToLower,
-    wallBias, days: dailyCloses.length,
+    // How far has price moved from open today?
+    const intradayRange = intradayUpper - intradayLower
+    const pctToIntradayUpper = +((intradayUpper - currentPrice) / intradayRange * 100).toFixed(1)
+    const pctToIntradayLower = +((currentPrice - intradayLower) / intradayRange * 100).toFixed(1)
+
+    if (pctToIntradayUpper < 15) intradayBias = 'nearUpper'
+    if (pctToIntradayLower < 15) intradayBias = 'nearLower'
   }
+
+  // ── Option C: Key price levels ────────────────────────────────
+  const keyLevels = []
+
+  // Yesterday's high and low — major ICT reference points
+  if (yesterday) {
+    keyLevels.push({ price: yesterday.high, label: 'PDH', type: 'resistance' })
+    keyLevels.push({ price: yesterday.low,  label: 'PDL', type: 'support' })
+  }
+
+  // Weekly high and low (last 5 trading days)
+  const weekDays = sortedDays.slice(-5)
+  if (weekDays.length >= 3) {
+    const weekHigh = Math.max(...weekDays.map(([,d]) => d.high))
+    const weekLow  = Math.min(...weekDays.map(([,d]) => d.low))
+    keyLevels.push({ price: weekHigh, label: 'PWH', type: 'resistance' })
+    keyLevels.push({ price: weekLow,  label: 'PWL', type: 'support' })
+  }
+
+  // Today's open — key intraday level
+  if (today) {
+    keyLevels.push({ price: today.open, label: "Today's Open", type: 'pivot' })
+  }
+
+  // ── Find nearest key levels to current price ──────────────────
+  const nearestResistance = keyLevels
+    .filter(l => l.price > currentPrice)
+    .sort((a,b) => a.price - b.price)[0]
+
+  const nearestSupport = keyLevels
+    .filter(l => l.price < currentPrice)
+    .sort((a,b) => b.price - a.price)[0]
+
+  // ── Combined wall bias ────────────────────────────────────────
+  // Use intraday bias as primary, key levels as confirmation
+  let wallBias = intradayBias
+
+  // Override if price is within 30pts of a key level
+  if (nearestResistance && (nearestResistance.price - currentPrice) < 30) {
+    wallBias = 'nearUpper'
+  }
+  if (nearestSupport && (currentPrice - nearestSupport.price) < 30) {
+    wallBias = 'nearLower'
+  }
+
+  const result = {
+    // Intraday walls
+    intradayUpper, intradayLower,
+    todayOpen:  today?.open || null,
+    todayHigh:  today?.high || null,
+    todayLow:   today?.low  || null,
+
+    // Key levels
+    keyLevels,
+    nearestResistance,
+    nearestSupport,
+
+    // Yesterday's levels
+    pdh: yesterday?.high || null,
+    pdl: yesterday?.low  || null,
+
+    // Bias
+    wallBias,
+    intradayBias,
+
+    // Distance to nearest levels
+    distToResistance: nearestResistance ? +(nearestResistance.price - currentPrice).toFixed(2) : null,
+    distToSupport:    nearestSupport    ? +(currentPrice - nearestSupport.price).toFixed(2)    : null,
+  }
+
+  console.log(`[WALLS] PDH:${result.pdh} PDL:${result.pdl} | Nearest resistance:${nearestResistance?.label}@${nearestResistance?.price} (${result.distToResistance}pts away) | Support:${nearestSupport?.label}@${nearestSupport?.price} (${result.distToSupport}pts away) | bias:${wallBias}`)
+
+  return result
 }
 // PATCH: raise min sample before sizing up
 // This is appended and will override the inline logic via a wrapper
+

@@ -1,32 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Dynamic Risk Engine
 //
-// Combines two inputs to size every trade differently:
-//
-// 1. WIN PROBABILITY from learning memory
-//    — How often has this exact signal combo won historically?
-//    — Higher win rate = bigger size, tighter target acceptable
-//    — Lower win rate = smaller size, need wider target to be worth it
-//
-// 2. ATR-BASED STOPS (Average True Range)
-//    — How much is the market actually moving right now?
-//    — Volatile market = wider stop, same dollar risk = fewer contracts
-//    — Quiet market = tighter stop, same dollar risk = more contracts
-//
-// Output for each trade:
-//   stopDistance  — how many points away to place stop loss
-//   stopPrice     — exact stop loss price
-//   targetPrice   — exact take profit price
-//   riskDollars   — dollar amount being risked
-//   contracts     — how many contracts to trade
-//   rrRatio       — reward to risk ratio for this trade
-//   confidence    — 0-1 score from learning memory
-//   reasoning     — human readable explanation
+// Combines three inputs to size every trade:
+// 1. Signal quality score — stronger setup = more risk allowed
+// 2. Fixed dollar risk — never risk more than $400 base per trade
+// 3. ATR-based stops — volatile market = fewer contracts automatically
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { calcATR } from './indicators'
 
-// Contract specs
 const CONTRACT_SPECS = {
   MNQ: { multiplier: 2,  tickSize: 0.25 },
   MES: { multiplier: 5,  tickSize: 0.25 },
@@ -34,99 +16,31 @@ const CONTRACT_SPECS = {
   ES:  { multiplier: 50, tickSize: 0.25 },
 }
 
-/**
- * Calculate dynamic risk parameters for a trade
- *
- * @param {object} params
- * @param {Array}   params.candles      - recent price bars
- * @param {string}  params.side         - 'LONG' or 'SHORT'
- * @param {number}  params.entryPrice   - current price
- * @param {string}  params.symbol       - 'MNQ', 'MES', etc
- * @param {number}  params.accountSize  - total account balance
- * @param {object}  params.decision     - from shouldTakeTrade()
- * @param {number}  params.baseRiskPct  - base % of account to risk (default 1%)
- */
 export function calcDynamicRisk({
   candles,
   side,
   entryPrice,
-  symbol     = 'MNQ',
+  symbol      = 'MNQ',
   accountSize = 25000,
-  decision   = {},
+  decision    = {},
   baseRiskPct = 1,
   signalScore = 4,
 }) {
   const spec = CONTRACT_SPECS[symbol] || CONTRACT_SPECS.MNQ
 
-  // ── Step 1: ATR-based stop distance ───────────────────────────
+  // ATR for stop and volatility scaling
   const atrSeries  = calcATR(candles, 14)
-  const currentATR = atrSeries[atrSeries.length - 1] || 50  // fallback 50pts
+  const currentATR = atrSeries[atrSeries.length - 1] || 50
 
-  // Stop = 1.5x ATR away from entry — gives trade room to breathe
-  // Volatile market (high ATR) = wider stop naturally
-  // Quiet market (low ATR) = tighter stop naturally
-  const atrMultiplier = 1.5
-  const stopDistance  = +(currentATR * atrMultiplier).toFixed(2)
-
-  const stopPrice = side === 'LONG'
-    ? +(entryPrice - stopDistance).toFixed(2)
-    : +(entryPrice + stopDistance).toFixed(2)
-
-  // ── Step 2: Win probability adjusts RR target ─────────────────
-  const winRate    = decision.winRate    ?? 50   // % (0-100)
+  // From learning memory
+  const winRate    = decision.winRate    ?? 50
   const expectancy = decision.expectancyR ?? 0
   const confidence = decision.confidence  ?? 0
   const sampleSize = decision.sampleSize  ?? 0
 
-  // Math: For a given win rate, minimum RR needed to be profitable:
-  //   minRR = (1 - winRate) / winRate
-  //   e.g. 40% win rate needs at least 1.5R to break even
-  //        60% win rate only needs 0.67R to break even
-  const winRateFraction = winRate / 100
-  const minRR = winRateFraction > 0
-    ? +((1 - winRateFraction) / winRateFraction).toFixed(2)
-    : 2
-
-  // Target RR = minimum needed + edge premium based on confidence
-  // More confident = aim higher since edge is proven
-  const edgePremium = confidence * 1.5  // up to +1.5R extra when fully confident
-  const rrRatio     = +Math.max(1.5, minRR + edgePremium).toFixed(2)
-
-  const targetDistance = +(stopDistance * rrRatio).toFixed(2)
-  const targetPrice    = side === 'LONG'
-    ? +(entryPrice + targetDistance).toFixed(2)
-    : +(entryPrice - targetDistance).toFixed(2)
-
-  // ── Step 3: Position sizing from win probability ───────────────
-  // Base risk adjusts with learning memory confidence
-  // No data → risk base %
-  // Proven edge → risk up to 1.5x base
-  // Weak edge → risk down to 0.5x base
-  const riskPct     = baseRiskPct
-  const riskDollars = +(accountSize * (riskPct / 100)).toFixed(2)
-
-// Contracts = risk dollars / (stop distance × multiplier)
-  // Then scaled by win probability and proven edge
-  const dollarPerPoint  = spec.multiplier
-  const rawContracts    = riskDollars / (stopDistance * dollarPerPoint)
-  const winFrac         = Math.max(0.3, Math.min(0.9, winRate / 100))
-  const probMultiplier  = Math.max(0.5, Math.min(2.0, winFrac * 2.5))
-  const edgeMultiplier  = Math.max(0.5, Math.min(2.0, 1 + expectancy * 0.5))
-  const finalMultiplier = probMultiplier * edgeMultiplier
-  const contracts       = sampleSize < 8
-    ? 1
-    : Math.min(6, Math.max(1, Math.round(rawContracts * finalMultiplier)))
-
-  // Actual risk after rounding to whole contracts
-  const actualRiskDollars  = +(contracts * stopDistance * dollarPerPoint).toFixed(2)
-  const actualRiskPct      = +((actualRiskDollars / accountSize) * 100).toFixed(2)
-  const potentialProfitDollars = +(contracts * targetDistance * dollarPerPoint).toFixed(2)
-
-  // ── Combined: Quality Score + Fixed Dollar Risk + ATR Scaling ────
+  // ── Step 1: Quality score adjusts base risk ───────────────────
   const BASE_RISK = 400
-
-  // Step 1: Adjust risk by signal quality score
-  const score          = signalScore || 4
+  const score     = signalScore || 4
   const scoreMultiplier = score <= 3 ? 0.5
     : score === 4 ? 0.75
     : score === 5 ? 1.0
@@ -134,38 +48,39 @@ export function calcDynamicRisk({
 
   const adjustedRisk = Math.round(BASE_RISK * scoreMultiplier)
 
-  // Step 2: ATR-based stop distance
-  const fixedStopDist   = +currentATR.toFixed(2)
-  const fixedTargetDist = +(currentATR * 2).toFixed(2)
+  // ── Step 2: ATR-based stop distance (1x ATR) ──────────────────
+  const stopDist   = +currentATR.toFixed(2)
+  const targetDist = +(currentATR * 2).toFixed(2)
 
-  // Step 3: Contracts = adjusted risk / (stop pts × $/pt)
-  const dollarPerPoint = spec.multiplier  // $2 MNQ
-  const rawContracts   = adjustedRisk / (fixedStopDist * dollarPerPoint)
+  // ── Step 3: Contracts from adjusted risk + ATR ────────────────
+  const dollarPerPoint = spec.multiplier
+  const rawContracts   = adjustedRisk / (stopDist * dollarPerPoint)
   const contracts      = Math.max(1, Math.min(6, Math.round(rawContracts)))
-  const actualRisk     = +(contracts * fixedStopDist * dollarPerPoint).toFixed(2)
+  const actualRisk     = +(contracts * stopDist * dollarPerPoint).toFixed(2)
 
-  // Step 4: Stop and target prices
-  const fixedStopPrice   = side === 'LONG'
-    ? +(entryPrice - fixedStopDist).toFixed(2)
-    : +(entryPrice + fixedStopDist).toFixed(2)
-  const fixedTargetPrice = side === 'LONG'
-    ? +(entryPrice + fixedTargetDist).toFixed(2)
-    : +(entryPrice - fixedTargetDist).toFixed(2)
+  // ── Step 4: Stop and target prices ───────────────────────────
+  const stopPrice   = side === 'LONG'
+    ? +(entryPrice - stopDist).toFixed(2)
+    : +(entryPrice + stopDist).toFixed(2)
+  const targetPrice = side === 'LONG'
+    ? +(entryPrice + targetDist).toFixed(2)
+    : +(entryPrice - targetDist).toFixed(2)
 
   return {
-    stopDistance:           fixedStopDist,
-    stopPrice:              fixedStopPrice,
-    targetPrice:            fixedTargetPrice,
+    stopDistance:           stopDist,
+    stopPrice,
+    targetPrice,
+    targetDistance:         targetDist,
     rrRatio:                2,
     contracts,
     riskDollars:            actualRisk,
     riskPct:                +((actualRisk / accountSize) * 100).toFixed(2),
-    potentialProfitDollars: +(contracts * fixedTargetDist * dollarPerPoint).toFixed(2),
+    potentialProfitDollars: +(contracts * targetDist * dollarPerPoint).toFixed(2),
     currentATR:             +currentATR.toFixed(2),
     winRate,
     expectancy,
     confidence,
     sampleSize,
-    reasoning: `Score ${score} (${scoreMultiplier}x) · $${adjustedRisk} risk · ATR ${fixedStopDist}pts · ${contracts}x MNQ · 2R`,
+    reasoning: `Score ${score}(${scoreMultiplier}x) · $${adjustedRisk} risk · ATR ${stopDist}pts · ${contracts}x · 2R`,
   }
 }

@@ -121,38 +121,31 @@ export function calcDynamicRisk({
   const actualRiskPct      = +((actualRiskDollars / accountSize) * 100).toFixed(2)
   const potentialProfitDollars = +(contracts * targetDistance * dollarPerPoint).toFixed(2)
 
-  // ── Step 4: Human readable reasoning ──────────────────────────
-  const reasons = []
-  if (sampleSize >= 8) {
-    reasons.push(`${winRate}% win rate over ${sampleSize} backtests`)
-    reasons.push(`${expectancy > 0 ? '+' : ''}${expectancy}R expectancy`)
-  } else {
-    reasons.push(`No backtest data yet — using base ${baseRiskPct}% risk`)
-  }
-  reasons.push(`ATR ${currentATR.toFixed(1)}pts → ${stopDistance}pt stop`)
-  reasons.push(`${rrRatio}R target`)
+  // ── BASELINE TEST — 1 contract, 1x ATR stop, 2R target ──────────
+  // Remove this block after baseline testing is complete
+  const fixedStopDist   = +currentATR.toFixed(2)
+  const fixedTargetDist = +(currentATR * 2).toFixed(2)
+  const fixedStopPrice  = side === 'LONG'
+    ? +(entryPrice - fixedStopDist).toFixed(2)
+    : +(entryPrice + fixedStopDist).toFixed(2)
+  const fixedTargetPrice = side === 'LONG'
+    ? +(entryPrice + fixedTargetDist).toFixed(2)
+    : +(entryPrice - fixedTargetDist).toFixed(2)
 
   return {
-    // Stop & target
-    stopDistance,
-    stopPrice,
-    targetPrice,
-    rrRatio,
-
-    // Position size
-    contracts,
-    riskDollars: actualRiskDollars,
-    riskPct:     actualRiskPct,
-    potentialProfitDollars,
-
-    // Context
-    currentATR:     +currentATR.toFixed(2),
+    stopDistance:          fixedStopDist,
+    stopPrice:             fixedStopPrice,
+    targetPrice:           fixedTargetPrice,
+    rrRatio:               2,
+    contracts:             1,
+    riskDollars:           fixedStopDist * 2,
+    riskPct:               baseRiskPct,
+    potentialProfitDollars: fixedTargetDist * 2,
+    currentATR:            +currentATR.toFixed(2),
     winRate,
     expectancy,
     confidence,
     sampleSize,
-
-    // Summary
-    reasoning: reasons.join(' · '),
+    reasoning:             `Baseline: 1 contract · ${fixedStopDist}pt stop · 2R target`,
   }
 }

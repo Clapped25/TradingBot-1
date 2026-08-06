@@ -13,6 +13,21 @@ import { calcDynamicRisk } from './riskEngine'
 // runBacktest() below is just a convenience wrapper that calls this
 // engine in a tight loop for bulk analysis (optimizer, AI feedback) —
 // the live replay UI calls evaluateBar() one tick at a time instead.
+
+function calcATRBacktest(candles, i, period = 14) {
+  const start = Math.max(0, i - period)
+  let sum = 0, count = 0
+  for (let k = start + 1; k <= i; k++) {
+    sum += Math.max(
+      candles[k].high - candles[k].low,
+      Math.abs(candles[k].high - candles[k-1].close),
+      Math.abs(candles[k].low  - candles[k-1].close)
+    )
+    count++
+  }
+  return count > 0 ? sum / count : 50
+}
+
 export function createBacktestEngine(config = {}) {
   const {
     symbolKey = 'ES',
@@ -102,8 +117,20 @@ export function createBacktestEngine(config = {}) {
       openLow = Math.min(openLow, c.low)
 
       const entry = trades[trades.length - 1]
-      if (c.low <= entry.stopPrice) {
-        return closeTrade(i, candles, entry.stopPrice, 'Stop loss hit')
+     // UPDATE 5: Partial TP at 1R — take 50%, move stop to breakeven
+      if (!entry.partialTaken) {
+        const stopDist = entry.price - entry.stopPrice
+        const oneR = entry.price + stopDist
+        if (c.high >= oneR) {
+          entry.partialTaken = true
+          entry.stopPrice = entry.price  // move stop to breakeven
+          const partialPnl = stopDist * spec.pointValue * Math.floor(entry.contracts / 2)
+          balance += partialPnl
+          entry.contracts = Math.max(1, Math.floor(entry.contracts / 2))
+        }
+      }
+      if (c.high >= entry.takeProfitPrice) {
+        return closeTrade(i, candles, entry.takeProfitPrice, `Take profit hit (${rMultiple}R)`)
       }
       if (c.high >= entry.takeProfitPrice) {
         return closeTrade(i, candles, entry.takeProfitPrice, `Take profit hit (${rMultiple}R)`)
@@ -122,6 +149,35 @@ export function createBacktestEngine(config = {}) {
     let result
     try { result = signalFn(i, candles, indicators, pos) } catch { result = { action: 'none' } }
     if (result.action !== 'buy') return null
+
+    // ── UPDATE 5: Signal quality checks ──────────────────────────
+    if (result.factors?.liquiditySweep) {
+      const atrU5 = calcATRBacktest(candles, i)
+      const minSweep = Math.min(20, atrU5 * 0.15)
+      let sweepDist = 0
+      for (let k = i; k >= Math.max(0, i-8); k--) {
+        if (indicators.liquiditySweepLow?.[k]) {
+          for (let j = k-1; j >= Math.max(0, k-15); j--) {
+            if (indicators.swingLow?.[j]) { sweepDist = candles[j].low - candles[k].low; break }
+          }
+          break
+        }
+      }
+      if (sweepDist > 0 && sweepDist < minSweep) return null
+
+      const minMove = Math.max(5, atrU5 * 0.1)
+      let maxMove = 0
+      for (let k = i; k >= Math.max(0, i-8); k--) {
+        if (indicators.liquiditySweepLow?.[k] || indicators.liquiditySweepHigh?.[k]) {
+          for (let b = k+1; b <= Math.min(k+3, i); b++) {
+            maxMove = Math.max(maxMove, Math.abs(candles[b].close - candles[k].close))
+          }
+          break
+        }
+      }
+      if (maxMove > 0 && maxMove < minMove) return null
+    }
+    // ── END UPDATE 5 ─────────────────────────────────────────────
 
     const entryPrice = c.close
     let stopPrice = result.stopPrice

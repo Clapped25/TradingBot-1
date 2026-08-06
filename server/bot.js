@@ -444,99 +444,6 @@ async function getEvalStats() {
 }
 
 
-// ── UPDATE 5: Signal Quality Improvements ────────────────────────
-
-// 1. Check if sweep distance is meaningful (ATR-based, capped at 20pts)
-function isMeaningfulSweep(candles, sweepBarIdx, swingPrice, side) {
-  if (sweepBarIdx < 0) return true  // fallback allow
-  const atr = calcATR(candles)
-  const minSweep = Math.min(20, atr * 0.15)
-  const bar = candles[sweepBarIdx]
-  if (!bar) return true
-  const sweepDistance = side === 'low'
-    ? swingPrice - bar.low    // how far below swing low price went
-    : bar.high - swingPrice   // how far above swing high price went
-  return sweepDistance >= minSweep
-}
-
-// 2. Check displacement after sweep — BOS within 3 bars + meaningful move
-function hasDisplacement(candles, sweepBarIdx) {
-  if (sweepBarIdx < 0 || sweepBarIdx >= candles.length - 1) return true
-  const atr = calcATR(candles)
-  const minMove = Math.max(5, atr * 0.1)  // at least 10% of ATR or 5pts
-  const maxBars = 3
-
-  // Check if price moved meaningfully within 3 bars after sweep
-  let maxMove = 0
-  for (let b = sweepBarIdx + 1; b <= Math.min(sweepBarIdx + maxBars, candles.length - 1); b++) {
-    const move = Math.abs(candles[b].close - candles[sweepBarIdx].close)
-    maxMove = Math.max(maxMove, move)
-  }
-  return maxMove >= minMove
-}
-
-// 3. Check 15-min FVG alignment (using 5min bars grouped into 15min)
-function has15minFVG(candles, side) {
-  if (candles.length < 3) return false
-  // Group last 15 bars into 5 x 15-min candles
-  const bars15m = []
-  for (let i = candles.length - 15; i < candles.length - 2; i += 3) {
-    if (i < 0) continue
-    const slice = candles.slice(i, i + 3)
-    bars15m.push({
-      open:  slice[0].open,
-      high:  Math.max(...slice.map(b => b.high)),
-      low:   Math.min(...slice.map(b => b.low)),
-      close: slice[slice.length - 1].close,
-    })
-  }
-  if (bars15m.length < 3) return false
-
-  // Check for FVG on 15min bars
-  for (let i = 2; i < bars15m.length; i++) {
-    if (side === 'bull' && bars15m[i].low > bars15m[i-2].high) return true
-    if (side === 'bear' && bars15m[i].high < bars15m[i-2].low) return true
-  }
-  return false
-}
-
-// 4. Handle partial take profit — close 50% at 1R, move stop to breakeven
-async function checkPartialTP(trades, currentPrice) {
-  const openPos = getOpenPos(trades)
-  if (!openPos || openPos.partialTaken) return  // already done partial
-
-  if (!openPos.stopLoss || !openPos.takeProfit) return
-
-  const stopDist   = Math.abs(openPos.entryPrice - openPos.stopLoss)
-  const oneR_level = openPos.side === 'LONG'
-    ? openPos.entryPrice + stopDist   // 1R up for longs
-    : openPos.entryPrice - stopDist   // 1R down for shorts
-
-  const hit1R = openPos.side === 'LONG'
-    ? currentPrice >= oneR_level
-    : currentPrice <= oneR_level
-
-  if (hit1R && !openPos.partialTaken) {
-    console.log(`🎯 1R HIT @ ${currentPrice} — taking 50% profit, moving stop to breakeven`)
-
-    // Mark partial as taken and move stop to breakeven
-    const idx = trades.findIndex(t => !t.exitTime)
-    if (idx !== -1) {
-      const pnlHalf = (stopDist * openPos.multiplier * Math.floor((openPos.quantity || 1) / 2))
-      trades[idx] = {
-        ...trades[idx],
-        partialTaken:   true,
-        partialPrice:   currentPrice,
-        partialPnl:     pnlHalf,
-        stopLoss:       openPos.entryPrice,  // move stop to breakeven
-        quantity:       Math.max(1, Math.floor((openPos.quantity || 1) / 2)),
-      }
-      await sbSet('paper_trades', trades)
-      await log('trade', `Partial TP taken @ ${currentPrice}`, `50% closed, stop moved to breakeven ${openPos.entryPrice}`)
-    }
-  }
-}
-
 // ── Main cycle ────────────────────────────────────────────────────
 async function runCycle() {
   const now = new Date()
@@ -629,11 +536,6 @@ async function runCycle() {
     console.log(`[POSITION] ${openPos.side} ${openPos.quantity}x @ ${openPos.entryPrice} | Current:${price} | SL:${openPos.stopLoss} TP:${openPos.takeProfit} | Unrealized:${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(0)}`)
   }
 
-  // Update 5: Check partial take profit at 1R
-  if (openPos && !openPos.partialTaken) {
-    await checkPartialTP(trades, currentPrice)
-  }
-
   // Evaluate signal
   const signal = evalSignal(candles, ind, strategy.signalBody, openPos)
   await log('signal', `Signal: ${signal?.action || 'NONE'}`, signal?.reason || null)
@@ -708,28 +610,6 @@ async function runCycle() {
     const allowed = await canTrade(signal.factors || {})
     if (!allowed) {
       await log('filter', `⛔ BLOCKED — negative expectancy in learning memory`); return
-    }
-
-    // Update 5: Calculate quality bonus score
-    let qualityBonus = 0
-    const qualityReasons = []
-
-    // 15-min FVG alignment bonus
-    const fvgSide = isBuy ? 'bull' : 'bear'
-    if (has15minFVG(candles, fvgSide)) {
-      qualityBonus += 2
-      qualityReasons.push('15m FVG aligned')
-    }
-
-    // Displacement check (use last bars as proxy)
-    const lastSweepIdx = candles.length - 8  // approximate sweep bar
-    if (hasDisplacement(candles, lastSweepIdx)) {
-      qualityBonus += 1
-      qualityReasons.push('displacement confirmed')
-    }
-
-    if (qualityBonus > 0) {
-      console.log(`[QUALITY] +${qualityBonus} bonus: ${qualityReasons.join(', ')}`)
     }
 
     // 4. Dynamic risk calculation

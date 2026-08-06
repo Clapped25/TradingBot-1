@@ -583,14 +583,12 @@ async function runCycle() {
 
     // 0. IV Wall filter — don't fight the walls
     if (walls) {
-      if (isBuy && walls.wallBias === 'nearUpper') {
-        const level = walls.nearestResistance
-        await log('filter', `⛔ BLOCKED LONG — near ${level?.label || 'resistance'} @ ${level?.price} (${walls.distToResistance}pts away)`)
+      if (isBuy  && walls.wallBias === 'nearUpper') {
+        await log('filter', `⛔ BLOCKED LONG — price near upper IV wall (${walls.pctToUpper}% remaining)`)
         return
       }
       if (isSell && walls.wallBias === 'nearLower') {
-        const level = walls.nearestSupport
-        await log('filter', `⛔ BLOCKED SHORT — near ${level?.label || 'support'} @ ${level?.price} (${walls.distToSupport}pts away)`)
+        await log('filter', `⛔ BLOCKED SHORT — price near lower IV wall (${walls.pctToLower}% remaining)`)
         return
       }
     }
@@ -665,127 +663,57 @@ setInterval(async () => {
 }, 60_000)
 setInterval(() => console.log('💓 heartbeat'), 30_000)
 
-// ── IV Walls — Intraday Range + Key Levels ──────────────────────
-// Option B: Intraday walls from today's open (tighter, more relevant)
-// Option C: Key levels from yesterday's high/low and weekly high/low
+// ── IV Walls / Historical Volatility ─────────────────────────────
+// Calculates tomorrow's probable price range from recent daily moves.
+// Used to filter trades — avoid longs at upper wall, shorts at lower wall.
 
 function calcIVWalls(candles, currentPrice) {
-  if (!candles.length) return null
-
-  const now = new Date()
-  const todayDate = now.toISOString().slice(0, 10)
-
-  // ── Group bars by day ─────────────────────────────────────────
+  // Group 5min bars into daily closes
   const days = {}
   for (const bar of candles) {
     const date = new Date(bar.time).toISOString().slice(0, 10)
-    if (!days[date]) days[date] = { open: bar.open, high: bar.high, low: bar.low, close: bar.close, bars: [] }
-    days[date].high  = Math.max(days[date].high, bar.high)
-    days[date].low   = Math.min(days[date].low,  bar.low)
-    days[date].close = bar.close
-    days[date].bars.push(bar)
+    if (!days[date]) days[date] = { close: bar.close }
+    days[date].close = bar.close  // keep last bar's close
+  }
+  const dailyCloses = Object.values(days).map(d => d.close)
+  if (dailyCloses.length < 6) return null
+
+  // Log returns
+  const returns = []
+  for (let i = 1; i < dailyCloses.length; i++) {
+    returns.push(Math.log(dailyCloses[i] / dailyCloses[i-1]))
   }
 
-  const sortedDays = Object.entries(days).sort((a,b) => a[0].localeCompare(b[0]))
-  const today      = days[todayDate]
-  const yesterday  = sortedDays.length >= 2 ? sortedDays[sortedDays.length - 2][1] : null
+  // 20-day or available HV
+  const period  = Math.min(20, returns.length)
+  const slice   = returns.slice(-period)
+  const mean    = slice.reduce((s,r) => s + r, 0) / slice.length
+  const variance = slice.reduce((s,r) => s + Math.pow(r - mean, 2), 0) / (slice.length - 1)
+  const hv      = Math.sqrt(variance) * Math.sqrt(252)
 
-  // ── Option B: Intraday walls from today's open ────────────────
-  let intradayUpper = null, intradayLower = null
-  let intradayBias  = 'neutral'
+  const dailyMove   = currentPrice * (hv / Math.sqrt(252))
+  const upper1sigma = +(currentPrice + dailyMove).toFixed(2)
+  const lower1sigma = +(currentPrice - dailyMove).toFixed(2)
+  const upper2sigma = +(currentPrice + dailyMove * 2).toFixed(2)
+  const lower2sigma = +(currentPrice - dailyMove * 2).toFixed(2)
 
-  if (today) {
-    // Use average daily range from last 5 days as expected move
-    const recentDays = sortedDays.slice(-6, -1)  // last 5 days excluding today
-    const avgRange   = recentDays.length > 0
-      ? recentDays.reduce((s, [,d]) => s + (d.high - d.low), 0) / recentDays.length
-      : 200
+  // How close is price to each wall? (0-100%)
+  const pctToUpper = +((upper1sigma - currentPrice) / dailyMove * 100).toFixed(1)
+  const pctToLower = +((currentPrice - lower1sigma) / dailyMove * 100).toFixed(1)
 
-    intradayUpper = +(today.open + avgRange).toFixed(2)
-    intradayLower = +(today.open - avgRange).toFixed(2)
+  // Wall bias — affects trade direction preference
+  let wallBias = 'neutral'
+  if (pctToUpper < 20) wallBias = 'nearUpper'  // near ceiling → prefer shorts
+  if (pctToLower < 20) wallBias = 'nearLower'  // near floor  → prefer longs
 
-    // How far has price moved from open today?
-    const intradayRange = intradayUpper - intradayLower
-    const pctToIntradayUpper = +((intradayUpper - currentPrice) / intradayRange * 100).toFixed(1)
-    const pctToIntradayLower = +((currentPrice - intradayLower) / intradayRange * 100).toFixed(1)
-
-    if (pctToIntradayUpper < 15) intradayBias = 'nearUpper'
-    if (pctToIntradayLower < 15) intradayBias = 'nearLower'
+  return {
+    hv: +(hv * 100).toFixed(2),
+    dailyMove: +dailyMove.toFixed(2),
+    upper1sigma, lower1sigma,
+    upper2sigma, lower2sigma,
+    pctToUpper, pctToLower,
+    wallBias, days: dailyCloses.length,
   }
-
-  // ── Option C: Key price levels ────────────────────────────────
-  const keyLevels = []
-
-  // Yesterday's high and low — major ICT reference points
-  if (yesterday) {
-    keyLevels.push({ price: yesterday.high, label: 'PDH', type: 'resistance' })
-    keyLevels.push({ price: yesterday.low,  label: 'PDL', type: 'support' })
-  }
-
-  // Weekly high and low (last 5 trading days)
-  const weekDays = sortedDays.slice(-5)
-  if (weekDays.length >= 3) {
-    const weekHigh = Math.max(...weekDays.map(([,d]) => d.high))
-    const weekLow  = Math.min(...weekDays.map(([,d]) => d.low))
-    keyLevels.push({ price: weekHigh, label: 'PWH', type: 'resistance' })
-    keyLevels.push({ price: weekLow,  label: 'PWL', type: 'support' })
-  }
-
-  // Today's open — key intraday level
-  if (today) {
-    keyLevels.push({ price: today.open, label: "Today's Open", type: 'pivot' })
-  }
-
-  // ── Find nearest key levels to current price ──────────────────
-  const nearestResistance = keyLevels
-    .filter(l => l.price > currentPrice)
-    .sort((a,b) => a.price - b.price)[0]
-
-  const nearestSupport = keyLevels
-    .filter(l => l.price < currentPrice)
-    .sort((a,b) => b.price - a.price)[0]
-
-  // ── Combined wall bias ────────────────────────────────────────
-  // Use intraday bias as primary, key levels as confirmation
-  let wallBias = intradayBias
-
-  // Override if price is within 30pts of a key level
-  if (nearestResistance && (nearestResistance.price - currentPrice) < 30) {
-    wallBias = 'nearUpper'
-  }
-  if (nearestSupport && (currentPrice - nearestSupport.price) < 30) {
-    wallBias = 'nearLower'
-  }
-
-  const result = {
-    // Intraday walls
-    intradayUpper, intradayLower,
-    todayOpen:  today?.open || null,
-    todayHigh:  today?.high || null,
-    todayLow:   today?.low  || null,
-
-    // Key levels
-    keyLevels,
-    nearestResistance,
-    nearestSupport,
-
-    // Yesterday's levels
-    pdh: yesterday?.high || null,
-    pdl: yesterday?.low  || null,
-
-    // Bias
-    wallBias,
-    intradayBias,
-
-    // Distance to nearest levels
-    distToResistance: nearestResistance ? +(nearestResistance.price - currentPrice).toFixed(2) : null,
-    distToSupport:    nearestSupport    ? +(currentPrice - nearestSupport.price).toFixed(2)    : null,
-  }
-
-  console.log(`[WALLS] PDH:${result.pdh} PDL:${result.pdl} | Nearest resistance:${nearestResistance?.label}@${nearestResistance?.price} (${result.distToResistance}pts away) | Support:${nearestSupport?.label}@${nearestSupport?.price} (${result.distToSupport}pts away) | bias:${wallBias}`)
-
-  return result
 }
 // PATCH: raise min sample before sizing up
 // This is appended and will override the inline logic via a wrapper
-

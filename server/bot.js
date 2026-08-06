@@ -150,46 +150,6 @@ async function calcDynamicRisk(candles, side, currentPrice, factors, accountBala
   return { stopPrice, targetPrice, stopDistance, targetDistance, contracts, riskDollars: actualRisk, winRate, expectancy, sampleSize }
 }
 
-  // ATR-based stop distance (1.5x ATR gives trade room to breathe)
-  const stopDistance = +(atrVal * 1.5).toFixed(2)
-
-  // Win-rate adjusted RR target
-  // If win rate is high → can aim for smaller RR (target is more achievable)
-  // If win rate is low  → need bigger RR to be profitable
-  const winFrac   = Math.max(0.3, Math.min(0.8, winRate / 100))
-  const minRR     = +((1 - winFrac) / winFrac).toFixed(2)  // break-even RR
-  const edgeBonus = confidence * 1.5  // up to +1.5R when fully confident
-  const rrRatio   = +Math.max(1.5, Math.min(4.0, minRR + edgeBonus)).toFixed(2)
-
-  const targetDistance = +(stopDistance * rrRatio).toFixed(2)
-
-  // Exact SL and TP prices
-  const stopPrice   = side === 'LONG'
-    ? +(currentPrice - stopDistance).toFixed(2)
-    : +(currentPrice + stopDistance).toFixed(2)
-  const targetPrice = side === 'LONG'
-    ? +(currentPrice + targetDistance).toFixed(2)
-    : +(currentPrice - targetDistance).toFixed(2)
-
-  // Position sizing — risk X% of account, scaled by expectancy
-  const riskMult    = sampleSize >= 8
-    ? Math.max(0.5, Math.min(1.5, 1 + expectancy * 0.5))
-    : 1.0
-  const riskDollars = accountBalance * (BASE_RISK_PCT / 100) * riskMult
-  const rawContracts = Math.max(1, Math.round(riskDollars / (stopDistance * MULTIPLIER)))
-  // Cap at 2 contracts until 30+ backtests, 3 until 50+, then uncapped
-  // During eval cap at 2, reduce to 1 if daily loss mounting
-  let maxContracts = sampleSize >= 50 ? 6 : sampleSize >= 30 ? 3 : 2
-  if (EVAL_MODE) {
-    const evalS = await getEvalStats()
-    maxContracts = evalS.todayPnl <= -300 ? 1 : EVAL_MAX_CONTRACTS
-  }
-  const contracts = Math.min(rawContracts, maxContracts)
-
-  console.log(`[RISK] ATR:${atrVal.toFixed(1)} stop:${stopDistance}pts RR:${rrRatio} contracts:${contracts} winRate:${winRate}% n:${sampleSize} riskMult:${riskMult}`)
-
-  return { stopPrice, targetPrice, stopDistance, targetDistance, rrRatio, contracts, winRate, expectancy, sampleSize }
-}
 
 // ── Market structure detection ────────────────────────────────────
 function detectStructure(candles) {

@@ -126,7 +126,6 @@ export function calcDynamicRisk({
   if (sampleSize >= 8) {
     reasons.push(`${winRate}% win rate over ${sampleSize} backtests`)
     reasons.push(`${expectancy > 0 ? '+' : ''}${expectancy}R expectancy`)
-    reasons.push(`${riskMultiplier}x risk multiplier`)
   } else {
     reasons.push(`No backtest data yet — using base ${baseRiskPct}% risk`)
   }

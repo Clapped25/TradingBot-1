@@ -100,16 +100,39 @@ export function createBacktestEngine(config = {}) {
     const c = candles[i]
 
     if (pos === 'long') {
-      // Track the highest and lowest price seen while the trade is open
       openHigh = Math.max(openHigh, c.high)
       openLow = Math.min(openLow, c.low)
 
       const entry = trades[trades.length - 1]
 
+      // Stop loss
+      if (c.low <= entry.stopPrice) {
+        return closeTrade(i, candles, entry.stopPrice, 'Stop loss hit')
+      }
+
+      // Time-based exit
+      const barsOpen = i - entryIdx
+      const stopDist = entry.price - entry.stopPrice
+      const currentR = stopDist > 0 ? (c.close - entry.price) / stopDist : 0
+
+      if (barsOpen > 30 && currentR < 0.25) {
+        return closeTrade(i, candles, c.close, 'Time exit: 30 bars, no progress')
+      }
+      if (barsOpen > 50) {
+        const recentHigh = Math.max(...candles.slice(Math.max(0, i-20), i).map(b => b.high))
+        if (recentHigh <= openHigh - (stopDist * 0.1)) {
+          return closeTrade(i, candles, c.close, 'Time exit: 50 bars, stalling')
+        }
+      }
+      if (barsOpen > 75) {
+        return closeTrade(i, candles, c.close, 'Time exit: 75 bars max hold')
+      }
+
+      // Take profit
       if (c.high >= entry.takeProfitPrice) {
         return closeTrade(i, candles, entry.takeProfitPrice, `Take profit hit (${rMultiple}R)`)
-      
       }
+
       let result
       try { result = signalFn(i, candles, indicators, pos) } catch { result = { action: 'none' } }
       if (result.action === 'sell' || result.action === 'exit') {
@@ -117,7 +140,6 @@ export function createBacktestEngine(config = {}) {
       }
       return null
     }
-
     // Flat — respect cooldown
     if (i - lastExitIdx < cooldownBars) return null
 
@@ -169,11 +191,9 @@ export function createBacktestEngine(config = {}) {
       stopPrice = dynamicRisk.stopPrice
     }
 
-    const stopDistance   = entryPrice - stopPrice
-    // Hard cap — never more than 2 contracts until 50+ proven trades
-    const rawContracts = dynamicRisk.contracts
-    const contracts =  dynamicRisk.contracts
-    const riskDollars    = dynamicRisk.riskDollars
+    const stopDistance    = entryPrice - stopPrice
+    const contracts       = dynamicRisk.contracts
+    const riskDollars     = dynamicRisk.riskDollars
     const takeProfitPrice = dynamicRisk.targetPrice
     if (contracts < 1) return null
 

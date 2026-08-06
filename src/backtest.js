@@ -184,6 +184,7 @@ export function createBacktestEngine(config = {}) {
       accountSize: balance,
       decision,
       baseRiskPct: riskPct,
+      signalScore: result.score || 4,
     })
 
     // Use dynamic ATR stop if signal didn't specify one

@@ -54,6 +54,7 @@ export function calcDynamicRisk({
   accountSize = 25000,
   decision   = {},
   baseRiskPct = 1,
+  signalScore = 4,
 }) {
   const spec = CONTRACT_SPECS[symbol] || CONTRACT_SPECS.MNQ
 
@@ -121,11 +122,30 @@ export function calcDynamicRisk({
   const actualRiskPct      = +((actualRiskDollars / accountSize) * 100).toFixed(2)
   const potentialProfitDollars = +(contracts * targetDistance * dollarPerPoint).toFixed(2)
 
-  // ── BASELINE TEST — 1 contract, 1x ATR stop, 2R target ──────────
-  // Remove this block after baseline testing is complete
+  // ── Combined: Quality Score + Fixed Dollar Risk + ATR Scaling ────
+  const BASE_RISK = 400
+
+  // Step 1: Adjust risk by signal quality score
+  const score          = signalScore || 4
+  const scoreMultiplier = score <= 3 ? 0.5
+    : score === 4 ? 0.75
+    : score === 5 ? 1.0
+    : 1.25  // score 6+
+
+  const adjustedRisk = Math.round(BASE_RISK * scoreMultiplier)
+
+  // Step 2: ATR-based stop distance
   const fixedStopDist   = +currentATR.toFixed(2)
   const fixedTargetDist = +(currentATR * 2).toFixed(2)
-  const fixedStopPrice  = side === 'LONG'
+
+  // Step 3: Contracts = adjusted risk / (stop pts × $/pt)
+  const dollarPerPoint = spec.multiplier  // $2 MNQ
+  const rawContracts   = adjustedRisk / (fixedStopDist * dollarPerPoint)
+  const contracts      = Math.max(1, Math.min(6, Math.round(rawContracts)))
+  const actualRisk     = +(contracts * fixedStopDist * dollarPerPoint).toFixed(2)
+
+  // Step 4: Stop and target prices
+  const fixedStopPrice   = side === 'LONG'
     ? +(entryPrice - fixedStopDist).toFixed(2)
     : +(entryPrice + fixedStopDist).toFixed(2)
   const fixedTargetPrice = side === 'LONG'
@@ -133,19 +153,19 @@ export function calcDynamicRisk({
     : +(entryPrice - fixedTargetDist).toFixed(2)
 
   return {
-    stopDistance:          fixedStopDist,
-    stopPrice:             fixedStopPrice,
-    targetPrice:           fixedTargetPrice,
-    rrRatio:               2,
-    contracts:             1,
-    riskDollars:           fixedStopDist * 2,
-    riskPct:               baseRiskPct,
-    potentialProfitDollars: fixedTargetDist * 2,
-    currentATR:            +currentATR.toFixed(2),
+    stopDistance:           fixedStopDist,
+    stopPrice:              fixedStopPrice,
+    targetPrice:            fixedTargetPrice,
+    rrRatio:                2,
+    contracts,
+    riskDollars:            actualRisk,
+    riskPct:                +((actualRisk / accountSize) * 100).toFixed(2),
+    potentialProfitDollars: +(contracts * fixedTargetDist * dollarPerPoint).toFixed(2),
+    currentATR:             +currentATR.toFixed(2),
     winRate,
     expectancy,
     confidence,
     sampleSize,
-    reasoning:             `Baseline: 1 contract · ${fixedStopDist}pt stop · 2R target`,
+    reasoning: `Score ${score} (${scoreMultiplier}x) · $${adjustedRisk} risk · ATR ${fixedStopDist}pts · ${contracts}x MNQ · 2R`,
   }
 }

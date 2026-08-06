@@ -172,7 +172,7 @@ export function createBacktestEngine(config = {}) {
     const stopDistance   = entryPrice - stopPrice
     // Hard cap — never more than 2 contracts until 50+ proven trades
     const rawContracts = dynamicRisk.contracts
-    const contracts = Math.min(rawContracts, 2)
+    const contracts =  dynamicRisk.contracts
     const riskDollars    = dynamicRisk.riskDollars
     const takeProfitPrice = dynamicRisk.targetPrice
     if (contracts < 1) return null

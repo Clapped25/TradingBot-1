@@ -117,18 +117,16 @@ export function createBacktestEngine(config = {}) {
       openLow = Math.min(openLow, c.low)
 
       const entry = trades[trades.length - 1]
-     // UPDATE 5: Partial TP at 1R — take 50%, move stop to breakeven
-      if (!entry.partialTaken) {
+      // UPDATE 5: Move stop to breakeven at 1R (no partial close)
+      if (!entry.breakevenSet) {
         const stopDist = entry.price - entry.stopPrice
         const oneR = entry.price + stopDist
         if (c.high >= oneR) {
-          entry.partialTaken = true
-          entry.stopPrice = entry.price  // move stop to breakeven
-          const partialPnl = stopDist * spec.pointValue * Math.floor(entry.contracts / 2)
-          balance += partialPnl
-          entry.contracts = Math.max(1, Math.floor(entry.contracts / 2))
+          entry.breakevenSet = true
+          entry.stopPrice = entry.price  // just move stop, keep full position
         }
       }
+
       if (c.high >= entry.takeProfitPrice) {
         return closeTrade(i, candles, entry.takeProfitPrice, `Take profit hit (${rMultiple}R)`)
       

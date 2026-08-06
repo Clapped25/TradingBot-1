@@ -101,21 +101,20 @@ export function calcDynamicRisk({
   // No data → risk base %
   // Proven edge → risk up to 1.5x base
   // Weak edge → risk down to 0.5x base
-  let riskMultiplier = 1
-  if (sampleSize >= 8) {
-    // Scale between 0.5x and 1.5x based on expectancy
-    const clampedR = Math.max(-0.5, Math.min(1, expectancy))
-    riskMultiplier = +(1 + clampedR * 0.5).toFixed(2)
-    riskMultiplier = Math.max(0.5, Math.min(1.5, riskMultiplier))
-  }
+  const riskPct     = baseRiskPct
+  const riskDollars = +(accountSize * (riskPct / 100)).toFixed(2)
 
-  const riskPct      = +(baseRiskPct * riskMultiplier).toFixed(2)
-  const riskDollars  = +(accountSize * (riskPct / 100)).toFixed(2)
-
-  // Contracts = risk dollars / (stop distance × multiplier)
-  const dollarPerPoint = spec.multiplier
-  const rawContracts   = riskDollars / (stopDistance * dollarPerPoint)
-  const contracts      = Math.max(1, Math.round(rawContracts))
+// Contracts = risk dollars / (stop distance × multiplier)
+  // Then scaled by win probability and proven edge
+  const dollarPerPoint  = spec.multiplier
+  const rawContracts    = riskDollars / (stopDistance * dollarPerPoint)
+  const winFrac         = Math.max(0.3, Math.min(0.9, winRate / 100))
+  const probMultiplier  = Math.max(0.5, Math.min(2.0, winFrac * 2.5))
+  const edgeMultiplier  = Math.max(0.5, Math.min(2.0, 1 + expectancy * 0.5))
+  const finalMultiplier = probMultiplier * edgeMultiplier
+  const contracts       = sampleSize < 8
+    ? 1
+    : Math.min(6, Math.max(1, Math.round(rawContracts * finalMultiplier)))
 
   // Actual risk after rounding to whole contracts
   const actualRiskDollars  = +(contracts * stopDistance * dollarPerPoint).toFixed(2)

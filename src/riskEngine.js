@@ -151,7 +151,6 @@ export function calcDynamicRisk({
     expectancy,
     confidence,
     sampleSize,
-    riskMultiplier,
 
     // Summary
     reasoning: reasons.join(' · '),

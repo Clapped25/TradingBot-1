@@ -96,9 +96,7 @@ function calcATR(candles, period = 14) {
   return sum / period
 }
 
-// ── Dynamic risk engine ───────────────────────────────────────────
-// Adjusts contracts and RR based on win probability from learning memory
-async function calcDynamicRisk(candles, side, currentPrice, factors, accountBalance) {
+async function calcDynamicRisk(candles, side, currentPrice, factors, accountBalance, signalScore = 4) {
   const atrVal = calcATR(candles)
 
   // Get win stats from learning memory
@@ -123,6 +121,34 @@ async function calcDynamicRisk(candles, side, currentPrice, factors, accountBala
       }
     }
   } catch (e) { console.error('Risk memory error:', e.message) }
+
+  // ── Combined: Quality Score + Fixed Dollar Risk + ATR Scaling ────
+  const BASE_RISK = 400
+  const score = signalScore || 4
+  const scoreMultiplier = score <= 3 ? 0.5
+    : score === 4 ? 0.75
+    : score === 5 ? 1.0
+    : 1.25
+
+  const adjustedRisk   = Math.round(BASE_RISK * scoreMultiplier)
+  const stopDistance   = +atrVal.toFixed(2)
+  const targetDistance = +(atrVal * 2).toFixed(2)
+  const dollarPerPoint = 2  // MNQ
+  const rawContracts   = adjustedRisk / (stopDistance * dollarPerPoint)
+  const contracts      = Math.max(1, Math.min(6, Math.round(rawContracts)))
+  const actualRisk     = +(contracts * stopDistance * dollarPerPoint).toFixed(2)
+
+  const stopPrice   = side === 'LONG'
+    ? +(currentPrice - stopDistance).toFixed(2)
+    : +(currentPrice + stopDistance).toFixed(2)
+  const targetPrice = side === 'LONG'
+    ? +(currentPrice + targetDistance).toFixed(2)
+    : +(currentPrice - targetDistance).toFixed(2)
+
+  console.log(`[RISK] Score:${score}(${scoreMultiplier}x) ATR:${atrVal.toFixed(1)} risk:$${adjustedRisk} contracts:${contracts} SL:${stopPrice} TP:${targetPrice}`)
+
+  return { stopPrice, targetPrice, stopDistance, targetDistance, contracts, riskDollars: actualRisk, winRate, expectancy, sampleSize }
+}
 
   // ATR-based stop distance (1.5x ATR gives trade room to breathe)
   const stopDistance = +(atrVal * 1.5).toFixed(2)
@@ -637,7 +663,7 @@ async function runCycle() {
     // 4. Dynamic risk calculation
     const side    = isBuy ? 'LONG' : 'SHORT'
     const account = await getAccount()
-    const risk    = await calcDynamicRisk(candles, side, currentPrice, signal.factors || {}, account.balance)
+    const risk = await calcDynamicRisk(candles, side, currentPrice, signal.factors || {}, account.balance, signal.score || 4)
 
     // 5. Open trade
     await openTrade(trades, {

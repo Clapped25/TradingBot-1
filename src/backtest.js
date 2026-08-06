@@ -131,9 +131,7 @@ export function createBacktestEngine(config = {}) {
       }
       if (c.high >= entry.takeProfitPrice) {
         return closeTrade(i, candles, entry.takeProfitPrice, `Take profit hit (${rMultiple}R)`)
-      }
-      if (c.high >= entry.takeProfitPrice) {
-        return closeTrade(i, candles, entry.takeProfitPrice, `Take profit hit (${rMultiple}R)`)
+      
       }
       let result
       try { result = signalFn(i, candles, indicators, pos) } catch { result = { action: 'none' } }

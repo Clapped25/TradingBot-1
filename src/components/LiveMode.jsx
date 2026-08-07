@@ -12,22 +12,22 @@ import IVWallsPanel from './IVWallsPanel'
 import EvalDashboard from './EvalDashboard'
 
 // Primary trading symbol and reference for SMT
-const PRIMARY   = 'NQ'   // using NQ for signal (strategy is NQ-based)
-const SYMBOL    = 'MNQ'  // paper trading in MNQ micros
+const PRIMARY   = 'NQ'
+const SYMBOL    = 'MNQ'
 const TF        = '5m'
 const PRICE_POLL_MS  = 2 * 60_000
 const SIGNAL_POLL_MS = 10 * 60_000
-const BARS_NEEDED     = 120       // last 10 hours of 5-min bars
-const [tvBars, setTvBars] = useState([])
+const BARS_NEEDED     = 120
 
-// ── Eval mode — mirrors server/bot.js prop-firm eval rules ────────
-const EVAL_DAILY_LIMIT   = 600  // trading halts for the day once realized loss hits this
-const EVAL_MAX_CONTRACTS = 2    // cap contracts at 2, drop to 1 after -$300 on the day
+// ── Eval mode ────────────────────────────────────────────────────
+const EVAL_DAILY_LIMIT   = 600
+const EVAL_MAX_CONTRACTS = 2
 
 export default function LiveMode({ strategy, onBack, onBacktest }) {
   // ── Price & data ────────────────────────────────────────────────
   const [livePrice,   setLivePrice]   = useState(null)
-  const [priceAge,    setPriceAge]    = useState(null)   // ms timestamp of last update
+  const [tvBars,      setTvBars]      = useState([])   // ← ADD HERE
+  const [priceAge,    setPriceAge]    = useState(null)
   const [priceError,  setPriceError]  = useState(null)
 
   // ── Signal ──────────────────────────────────────────────────────

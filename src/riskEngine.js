@@ -60,8 +60,19 @@ export function calcDynamicRisk({
   const adjustedRisk = Math.round(BASE_RISK * scoreMultiplier)
 
   // ── Step 2: ATR-based stop (1x ATR) ──────────────────────────
-  const stopDist   = +currentATR.toFixed(2)
-  const targetDist = +(currentATR * 2).toFixed(2)
+  const stopDist = +currentATR.toFixed(2)
+
+  // ── Update 6: adjusted RR from win-rate break-even + confidence bonus ─
+  // No sample data → stay at the safe 2.0R default. Otherwise the target
+  // RR is whichever is larger: 2.0R, or the break-even RR implied by the
+  // learned win rate (1-wr)/wr plus a confidence bonus of up to 1.5R.
+  // Revert by setting rrRatio back to a flat 2.
+  const hasData        = sampleSize > 0 && winRate != null
+  const breakevenRR     = hasData ? (1 - winRate / 100) / (winRate / 100) : 2.0
+  const confidenceBonus = hasData ? confidence * 1.5 : 0
+  const rrRatio         = hasData ? Math.max(2.0, +(breakevenRR + confidenceBonus).toFixed(2)) : 2.0
+
+  const targetDist = +(stopDist * rrRatio).toFixed(2)
 
   // ── Step 3: Contracts from adjusted risk + ATR ────────────────
   const dollarPerPoint = spec.multiplier
@@ -88,7 +99,7 @@ export function calcDynamicRisk({
     stopPrice,
     targetPrice,
     targetDistance:         targetDist,
-    rrRatio:                2,
+    rrRatio,
     contracts,
     riskDollars:            actualRisk,
     riskPct:                +((actualRisk / accountSize) * 100).toFixed(2),
@@ -98,6 +109,6 @@ export function calcDynamicRisk({
     expectancy,
     confidence,
     sampleSize,
-    reasoning: `Score ${score}(${scoreMultiplier}x) · $${adjustedRisk} risk · ATR ${stopDist}pts · ${contracts}x · 2R · max $${actualRisk}`,
+    reasoning: `Score ${score}(${scoreMultiplier}x) · $${adjustedRisk} risk · ATR ${stopDist}pts · ${contracts}x · ${rrRatio}R · max $${actualRisk}`,
   }
 }

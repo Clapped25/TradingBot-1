@@ -6,7 +6,6 @@ const PORT = process.env.PORT || 3000
 http.createServer((req, res) => { res.writeHead(200); res.end('TradingBot running') })
   .listen(PORT, () => console.log(`Health check on port ${PORT}`))
 
-const MASSIVE_API_KEY = (process.env.MASSIVE_API_KEY || '').trim()
 const SUPABASE_URL    = 'https://dxnxtthvupbfydttqcpk.supabase.co'
 const SUPABASE_ANON   = (process.env.SUPABASE_ANON || '').trim().replace(/[\r\n\t]/g, '')
 const PRIMARY         = 'NQ'
@@ -48,33 +47,32 @@ async function sbSet(table, data, id = 'main') {
   }
 }
 
-// ── Massive ───────────────────────────────────────────────────────
-const MONTH_CODES = ['F','G','H','J','K','M','N','Q','U','V','X','Z']
-function getFrontMonthTicker() {
-  const now = new Date(), y = now.getFullYear(), m = now.getMonth() + 1
-  const qm = [3,6,9,12].find(q => q >= m) || 3
-  const yr = qm >= m ? y : y + 1
-  return `${PRIMARY}${MONTH_CODES[qm-1]}${String(yr).slice(-1)}`
-}
-async function fetchBars(limit = 300) {
-  const ticker = getFrontMonthTicker()
-  const now    = new Date()
-  const from   = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000)
-  const gte    = from.toISOString().slice(0, 10)
-  const url    = `https://api.massive.com/futures/v1/aggs/${ticker}` +
-    `?resolution=5min&window_start.gte=${gte}&window_start.lte=${now.toISOString()}` +
-    `&limit=${limit}&sort=window_start.desc&apiKey=${MASSIVE_API_KEY}&_t=${Date.now()}`
-  const res  = await fetch(url, { headers: { 'Cache-Control': 'no-cache' } })
-  if (!res.ok) throw new Error(`Massive ${res.status}: ${await res.text()}`)
+
+async function fetchBars(limit = 500) {
+  const res  = await fetch('https://tv-price-feed-production.up.railway.app/bars')
   const data = await res.json()
-  const bars = (data.results || []).reverse().map(b => ({
-    time: b.window_start / 1e6, open: b.open, high: b.high, low: b.low, close: b.close,
-  }))
-  if (bars.length > 0) {
-    const last = bars[bars.length - 1]
-    console.log(`Got ${bars.length} bars. Most recent: ${new Date(last.time).toISOString()} close:${last.close}`)
+
+  // Get 1-minute bars and group into 5-minute candles
+  const bars1m = (data.bars || []).slice(-limit * 5)
+  if (bars1m.length === 0) { console.log('No bars from TV feed'); return [] }
+
+  // Group 1-minute bars into 5-minute candles
+  const bars5m = []
+  for (let i = 0; i < bars1m.length; i += 5) {
+    const slice = bars1m.slice(i, i + 5)
+    if (slice.length === 0) continue
+    bars5m.push({
+      time:  slice[0].time,
+      open:  slice[0].open,
+      high:  Math.max(...slice.map(b => b.high)),
+      low:   Math.min(...slice.map(b => b.low)),
+      close: slice[slice.length - 1].close,
+    })
   }
-  return bars
+
+  const last = bars5m[bars5m.length - 1]
+  console.log(`Got ${bars5m.length} 5min bars from TradingView. Latest: ${new Date(last.time).toISOString()} close:${last.close}`)
+  return bars5m.slice(-limit)
 }
 
 // ── ATR ───────────────────────────────────────────────────────────

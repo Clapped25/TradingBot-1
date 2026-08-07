@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createChart, ColorType, CrosshairMode, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts'
-import { fetchMonthRange } from '../massiveFinance'
 
 const PRIMARY = 'NQ'
 const TF      = '5m'
@@ -69,37 +68,35 @@ export default function TradeChart({ trades = [], livePrice = null }) {
     }
   }, [])
 
-  // ── Load data ────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
     if (!candleRef.current) return
     setError(null)
-
     try {
-      const now   = new Date()
-      const year  = now.getFullYear()
-      const month = now.getMonth() + 1
-      const prevY = month === 1 ? year - 1 : year
-      const prevM = month === 1 ? 12 : month - 1
+      const res     = await fetch('https://tv-price-feed-production.up.railway.app/bars')
+      const tvData  = await res.json()
+      const bars1m  = tvData.bars || []
 
-      const [curr, prev] = await Promise.all([
-        fetchMonthRange(PRIMARY, TF, year, month),
-        fetchMonthRange(PRIMARY, TF, prevY, prevM),
-      ])
-
-      const all = [...prev, ...curr].slice(-80)
+      // Group 1-minute bars into 5-minute candles
+      const bars5m = []
+      for (let i = 0; i < bars1m.length; i += 5) {
+        const slice = bars1m.slice(i, i + 5)
+        if (slice.length === 0) continue
+        bars5m.push({
+          time:  Math.floor(slice[0].time / 1000),
+          open:  slice[0].open,
+          high:  Math.max(...slice.map(b => b.high)),
+          low:   Math.min(...slice.map(b => b.low)),
+          close: slice[slice.length - 1].close,
+        })
+      }
+      const all = bars5m.slice(-80)
       if (all.length === 0) {
         setError('No data — market may be closed')
         setLoading(false)
         return
       }
 
-      const data = all.map(b => ({
-        time:  Math.floor(b.time / 1000),
-        open:  b.open,
-        high:  b.high,
-        low:   b.low,
-        close: b.close,
-      }))
+      const data = all
 
       candleRef.current.setData(data)
       setBarCount(data.length)

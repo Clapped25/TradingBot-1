@@ -186,25 +186,24 @@ export function createBacktestEngine(config = {}) {
       baseRiskPct: riskPct,
       signalScore: result.score || 4,
     })
-    
-      // HARD OVERRIDE — $500 max loss regardless of riskEngine output
-    const stopPts = dynamicRisk.stopDistance || 50
-    const riskPerContract = stopPts * spec.pointValue
-    const maxContracts = Math.max(0, Math.floor(500 / riskPerContract))
-    if (dynamicRisk.contracts > maxContracts) {
-      dynamicRisk.contracts = maxContracts
-      dynamicRisk.riskDollars = +(maxContracts * riskPerContract).toFixed(2)
-    }
-
-
     // Use dynamic ATR stop if signal didn't specify one
     if (stopPrice == null || stopPrice >= entryPrice) {
       stopPrice = dynamicRisk.stopPrice
     }
 
-    const stopDistance    = entryPrice - stopPrice
-    const contracts       = dynamicRisk.contracts
-    const riskDollars     = dynamicRisk.riskDollars
+    const stopDistance = entryPrice - stopPrice
+
+    // HARD OVERRIDE — $500 max loss regardless of riskEngine output.
+    // Must use the ACTUAL stop distance (signal/swing-low stop can differ
+    // from the ATR-based dynamicRisk.stopDistance used to size the trade).
+    const riskPerContract = stopDistance * spec.pointValue
+    const maxContracts = Math.max(0, Math.floor(500 / riskPerContract))
+    let contracts = dynamicRisk.contracts
+    let riskDollars = dynamicRisk.riskDollars
+    if (contracts > maxContracts) {
+      contracts = maxContracts
+      riskDollars = +(maxContracts * riskPerContract).toFixed(2)
+    }
     const takeProfitPrice = dynamicRisk.targetPrice
     if (contracts < 1) return null
 

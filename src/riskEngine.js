@@ -60,8 +60,11 @@ export function calcDynamicRisk({
   const adjustedRisk = Math.round(BASE_RISK * scoreMultiplier)
 
   // ── Step 2: ATR-based stop (1x ATR) ──────────────────────────
-  const stopDist   = +currentATR.toFixed(2)
-  const targetDist = +(currentATR * 2).toFixed(2)
+  // Cap stop at 125pts max — beyond that even 1 contract exceeds $500 risk
+  const rawStopDist = currentATR
+  const stopDist    = +Math.min(rawStopDist, 125).toFixed(2)
+  const targetDist  = +(stopDist * 2).toFixed(2)  // 2R based on capped stop
+
 
   // ── Step 3: Contracts from adjusted risk + ATR ────────────────
   const dollarPerPoint = spec.multiplier

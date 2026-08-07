@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { buildIndicators } from '../indicators'
-import { fetchLatestPrice, fetchMonthRange } from '../massiveFinance'
 import {
   openTrade, closeTrade, getOpenPosition, getTrades,
   getAccount, getUnrealizedPnl, checkAutoExit, checkTimeExit, isInCooldown, getTodayPnl, getStats, resetPaperAccount,
@@ -16,7 +15,7 @@ import EvalDashboard from './EvalDashboard'
 const PRIMARY   = 'NQ'   // using NQ for signal (strategy is NQ-based)
 const SYMBOL    = 'MNQ'  // paper trading in MNQ micros
 const TF        = '5m'
-const PRICE_POLL_MS   = 60_000   // 60s — 1 API call per min, within free tier
+const PRICE_POLL_MS = 60_000 // 60s — reads from TradingView real-time feed
 const SIGNAL_POLL_MS  = 5 * 60_000  // 5min signal re-eval
 const BARS_NEEDED     = 120       // last 10 hours of 5-min bars
 
@@ -91,23 +90,27 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
     setActivityLog(prev => [entry, ...prev].slice(0, 50))
   }
 
-  // ── Fetch latest price from Massive ────────────────────────────
+  // ── Fetch latest price from TradingView ────────────────────────────
   const fetchPrice = useCallback(async () => {
     try {
-      const result = await fetchLatestPrice(PRIMARY)
-      if (!result) return
-      setLivePrice(result.price)
+      const res    = await fetch('https://tv-price-feed-production.up.railway.app/bars')
+      const data   = await res.json()
+      const bars   = data.bars || []
+      if (bars.length === 0) return
+      const latest = bars[bars.length - 1]
+      const price  = latest.close
+
+      setLivePrice(price)
       setPriceAge(Date.now())
       setPriceError(null)
-      logActivity('price', `Price update: ${result.price.toFixed(2)}`, `Ticker: ${result.ticker || PRIMARY}`)
+      logActivity('price', `Price update: ${price.toFixed(2)}`, `From TradingView real-time feed`)
 
-      // Check SL/TP auto-exit
-      const autoExit = checkAutoExit(result.price)
+      const autoExit = checkAutoExit(price)
       if (autoExit) {
-        const res = closeTrade({ exitPrice: result.price, exitReason: autoExit })
-        if (res.ok) refreshBroker(result.price)
+        const res = closeTrade({ exitPrice: price, exitReason: autoExit })
+        if (res.ok) refreshBroker(price)
       } else {
-        refreshBroker(result.price)
+        refreshBroker(price)
       }
     } catch (e) {
       setPriceError(e.message)
@@ -121,17 +124,25 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
     setSignalError(null)
 
     try {
-      const now   = new Date()
-      const year  = now.getFullYear()
-      const month = now.getMonth() + 1
-      const prevY = month === 1 ? year - 1 : year
-      const prevM = month === 1 ? 12 : month - 1
+     // Fetch real-time bars from TradingView price feed
+      const tvRes  = await fetch('https://tv-price-feed-production.up.railway.app/bars')
+      const tvData = await tvRes.json()
+      const bars1m = tvData.bars || []
 
-      const [curr, prev] = await Promise.all([
-        fetchMonthRange(PRIMARY, TF, year, month),
-        fetchMonthRange(PRIMARY, TF, prevY, prevM),
-      ])
-      const allBars = [...prev, ...curr].slice(-BARS_NEEDED)
+      // Group 1-minute bars into 5-minute candles
+      const bars5m = []
+      for (let i = 0; i < bars1m.length; i += 5) {
+        const slice = bars1m.slice(i, i + 5)
+        if (slice.length === 0) continue
+        bars5m.push({
+          time:  slice[0].time,
+          open:  slice[0].open,
+          high:  Math.max(...slice.map(b => b.high)),
+          low:   Math.min(...slice.map(b => b.low)),
+          close: slice[slice.length - 1].close,
+        })
+      }
+      const allBars = bars5m.slice(-BARS_NEEDED)
 
       if (allBars.length < 20) {
         setSignalError('Not enough bars yet — market may be closed or outside trading hours')

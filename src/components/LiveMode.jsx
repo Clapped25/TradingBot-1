@@ -3,7 +3,7 @@ import { buildIndicators } from '../indicators'
 import { fetchLatestPrice, fetchMonthRange } from '../massiveFinance'
 import {
   openTrade, closeTrade, getOpenPosition, getTrades,
-  getAccount, getUnrealizedPnl, checkAutoExit, getStats, resetPaperAccount,
+  getAccount, getUnrealizedPnl, checkAutoExit, checkTimeExit, isInCooldown, getStats, resetPaperAccount,
 } from '../paperBroker'
 import { generatePineScript } from '../pineScriptExporter'
 import { shouldTakeTrade, recordLiveTrade, getSession, SESSION_LABELS } from '../tradeMemory'
@@ -175,6 +175,21 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
       setSignal(result || { action: 'NONE' })
       setSignalAge(Date.now())
 
+      // ── Time-based exit — mirrors backtest's 30/50/75-bar rules ────
+      const openPos = getOpenPosition()
+      if (openPos) {
+        const exitPrice = livePrice ?? lastBar.close
+        const timeExitReason = checkTimeExit(exitPrice, allBars, 5)
+        if (timeExitReason) {
+          const res = await closeTrade({ exitPrice, exitReason: timeExitReason })
+          if (res.ok) {
+            recordLiveTrade({ ...res.trade, factors: normalizeFactor(result?.factors) }, strategy?.name || 'live')
+            logActivity('trade', `Closed ${openPos.side} @ ${exitPrice.toFixed(2)}`, `${timeExitReason} → $${res.pnlDollars?.toFixed(0)}`)
+            refreshBroker(exitPrice)
+          }
+        }
+      }
+
       // Auto-trade
       if (autoTrade && result?.action && result.action !== 'NONE') {
         const pos = getOpenPosition()
@@ -223,6 +238,12 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
 
   // ── Trade actions ───────────────────────────────────────────────
   function placeOrder(side) {
+    // ── Cooldown between trades ───────────────────────────────────
+    if (isInCooldown(3, 5)) {
+      logActivity('filter', `⛔ BLOCKED ${side}`, 'Cooldown active — waiting after last close')
+      return
+    }
+
     // ── Check learning system ────────────────────────────────────
     const factors  = normalizeFactor(signal?.factors)
     const decision = shouldTakeTrade(factors, { minSampleSize: 8, expectancyFloor: 0 })

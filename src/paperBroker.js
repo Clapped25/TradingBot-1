@@ -154,6 +154,57 @@ export function checkAutoExit(currentPrice) {
   return null
 }
 
+// ── Time-based exit — mirrors backtest.js's 30/50/75-bar rules ───
+// Live has no bar index, so "bars open" is derived from elapsed time
+// vs the timeframe (tfMinutes). recentBars (same bars the signal was
+// evaluated on) supplies the stalling check the same way the backtest
+// engine uses candles.slice(i-20, i).
+export function checkTimeExit(currentPrice, recentBars = [], tfMinutes = 5) {
+  const pos = getOpenPosition()
+  if (!pos) return null
+
+  const tfMs = tfMinutes * 60_000
+  const barsOpen = Math.floor((Date.now() - pos.entryTime) / tfMs)
+  const dir = pos.side === 'LONG' ? 1 : -1
+  const stopDist = pos.stopLoss != null ? dir * (pos.entryPrice - pos.stopLoss) : 0
+  const currentR = stopDist > 0 ? dir * (currentPrice - pos.entryPrice) / stopDist : 0
+
+  if (barsOpen > 30 && currentR < 0.25) return 'Time exit: 30 bars, no progress'
+
+  if (barsOpen > 50 && stopDist > 0 && recentBars.length) {
+    const favPrice = b => pos.side === 'LONG' ? b.high : b.low
+    const sinceEntry = recentBars.filter(b => b.time >= pos.entryTime)
+    const extremeSinceEntry = sinceEntry.length
+      ? Math.max(...sinceEntry.map(b => dir * favPrice(b)))
+      : dir * pos.entryPrice
+    const recentExtreme = Math.max(...recentBars.slice(-20).map(b => dir * favPrice(b)))
+    if (recentExtreme <= extremeSinceEntry - (stopDist * 0.1)) return 'Time exit: 50 bars, stalling'
+  }
+
+  if (barsOpen > 75) return 'Time exit: 75 bars max hold'
+
+  return null
+}
+
+// ── Cooldown between trades ───────────────────────────────────────
+// Mirrors backtest.js's cooldownBars: blocks new entries for N bars
+// (in elapsed time) after the last close.
+export function isInCooldown(cooldownBars = 3, tfMinutes = 5) {
+  const trades = getTrades().filter(t => t.exitTime)
+  if (!trades.length) return false
+  const lastExitTime = Math.max(...trades.map(t => t.exitTime))
+  return Date.now() - lastExitTime < cooldownBars * tfMinutes * 60_000
+}
+
+// ── Today's realized P&L — for eval daily-loss enforcement ───────
+export function getTodayPnl() {
+  const todayStart = new Date()
+  todayStart.setHours(0, 0, 0, 0)
+  return getTrades()
+    .filter(t => t.exitTime && t.exitTime >= todayStart.getTime())
+    .reduce((s, t) => s + (t.pnlDollars || 0), 0)
+}
+
 // ── Stats ────────────────────────────────────────────────────────
 export function getStats() {
   const account = getAccount()

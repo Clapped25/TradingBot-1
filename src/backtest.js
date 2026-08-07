@@ -189,10 +189,11 @@ export function createBacktestEngine(config = {}) {
     
       // HARD OVERRIDE — $500 max loss regardless of riskEngine output
     const stopPts = dynamicRisk.stopDistance || 50
-    const maxContracts = Math.max(1, Math.floor(500 / (stopPts * 2)))
+    const riskPerContract = stopPts * spec.pointValue
+    const maxContracts = Math.max(0, Math.floor(500 / riskPerContract))
     if (dynamicRisk.contracts > maxContracts) {
       dynamicRisk.contracts = maxContracts
-      dynamicRisk.riskDollars = +(maxContracts * stopPts * 2).toFixed(2)
+      dynamicRisk.riskDollars = +(maxContracts * riskPerContract).toFixed(2)
     }
 
 

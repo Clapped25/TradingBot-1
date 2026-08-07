@@ -11,17 +11,16 @@ const SUPABASE_URL    = 'https://dxnxtthvupbfydttqcpk.supabase.co'
 const SUPABASE_ANON   = (process.env.SUPABASE_ANON || '').trim().replace(/[\r\n\t]/g, '')
 const PRIMARY         = 'NQ'
 const SYMBOL          = 'MNQ'
-const MULTIPLIER      = 2   // MNQ = $2 per point
+const MULTIPLIER      = 2
 const POLL_MS         = 5 * 60 * 1000
-const BASE_RISK_PCT   = 1   // risk 1% of account per trade
 
 // ── Eval Mode Config ──────────────────────────────────────────────
-const EVAL_MODE         = true    // set false when on real funded account
-const EVAL_ACCOUNT_SIZE = 25000
-const EVAL_PROFIT_TARGET = 1250   // +$1,250 to pass
-const EVAL_MAX_DRAWDOWN  = 1000   // -$1,000 blows account
-const EVAL_DAILY_LIMIT   = 600    // stop trading at -$600/day (buffer before $1k limit)
-const EVAL_MAX_CONTRACTS = 2      // cap contracts during eval
+const EVAL_MODE          = true
+const EVAL_ACCOUNT_SIZE  = 25000
+const EVAL_PROFIT_TARGET = 1250
+const EVAL_MAX_DRAWDOWN  = 1000
+const EVAL_DAILY_LIMIT   = 600
+const EVAL_MAX_CONTRACTS = 2
 
 // ── Supabase ──────────────────────────────────────────────────────
 const SB_HEADERS = {
@@ -30,7 +29,6 @@ const SB_HEADERS = {
   'Authorization': `Bearer ${SUPABASE_ANON}`,
   'Prefer':        'resolution=merge-duplicates',
 }
-
 async function sbGet(table, id = 'main') {
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}&select=data`, { headers: SB_HEADERS })
@@ -38,7 +36,6 @@ async function sbGet(table, id = 'main') {
     return (await res.json())?.[0]?.data ?? null
   } catch { return null }
 }
-
 async function sbSet(table, data, id = 'main') {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
     method: 'POST', headers: SB_HEADERS,
@@ -53,14 +50,12 @@ async function sbSet(table, data, id = 'main') {
 
 // ── Massive ───────────────────────────────────────────────────────
 const MONTH_CODES = ['F','G','H','J','K','M','N','Q','U','V','X','Z']
-
 function getFrontMonthTicker() {
   const now = new Date(), y = now.getFullYear(), m = now.getMonth() + 1
   const qm = [3,6,9,12].find(q => q >= m) || 3
   const yr = qm >= m ? y : y + 1
   return `${PRIMARY}${MONTH_CODES[qm-1]}${String(yr).slice(-1)}`
 }
-
 async function fetchBars(limit = 300) {
   const ticker = getFrontMonthTicker()
   const now    = new Date()
@@ -96,13 +91,13 @@ function calcATR(candles, period = 14) {
   return sum / period
 }
 
-// ── Dynamic risk engine ───────────────────────────────────────────
-// Adjusts contracts and RR based on win probability from learning memory
-async function calcDynamicRisk(candles, side, currentPrice, factors, accountBalance) {
+// ── Dynamic Risk Engine ───────────────────────────────────────────
+// Quality score + fixed dollar risk + ATR volatility scaling + $500 hard cap
+async function calcDynamicRisk(candles, side, currentPrice, factors, accountBalance, signalScore = 4) {
   const atrVal = calcATR(candles)
 
   // Get win stats from learning memory
-  let winRate = 50, expectancy = 0, sampleSize = 0, confidence = 0
+  let winRate = 50, expectancy = 0, sampleSize = 0
   try {
     const mem = await sbGet('learning_memory') || { trades: [] }
     if (mem.trades?.length) {
@@ -118,51 +113,56 @@ async function calcDynamicRisk(candles, side, currentPrice, factors, accountBala
           sampleSize = matching.length
           winRate    = +((matching.filter(t => t.win).length / sampleSize) * 100).toFixed(1)
           expectancy = +(matching.reduce((s,t) => s + (t.rMultiple || 0), 0) / sampleSize).toFixed(3)
-          confidence = Math.min(1, sampleSize / 30)
         }
       }
     }
   } catch (e) { console.error('Risk memory error:', e.message) }
 
-  // ATR-based stop distance (1.5x ATR gives trade room to breathe)
-  const stopDistance = +(atrVal * 1.5).toFixed(2)
+  // Step 1: Quality score adjusts base risk
+  const BASE_RISK = 400
+  const score = signalScore || 4
+  const scoreMultiplier = score <= 3 ? 0.5
+    : score === 4 ? 0.75
+    : score === 5 ? 1.0
+    : 1.25  // score 6+
+  const adjustedRisk = Math.round(BASE_RISK * scoreMultiplier)
 
-  // Win-rate adjusted RR target
-  // If win rate is high → can aim for smaller RR (target is more achievable)
-  // If win rate is low  → need bigger RR to be profitable
-  const winFrac   = Math.max(0.3, Math.min(0.8, winRate / 100))
-  const minRR     = +((1 - winFrac) / winFrac).toFixed(2)  // break-even RR
-  const edgeBonus = confidence * 1.5  // up to +1.5R when fully confident
-  const rrRatio   = +Math.max(1.5, Math.min(4.0, minRR + edgeBonus)).toFixed(2)
+  // Step 2: ATR-based stop (1x ATR)
+  const stopDist   = +atrVal.toFixed(2)
+  const targetDist = +(atrVal * 2).toFixed(2)
 
-  const targetDistance = +(stopDistance * rrRatio).toFixed(2)
+  // Step 3: Contracts from adjusted risk + ATR
+  const dollarPerPoint  = MULTIPLIER  // $2 MNQ
+  const rawContracts    = adjustedRisk / (stopDist * dollarPerPoint)
+  const baseContracts   = Math.max(1, Math.min(6, Math.round(rawContracts)))
+  const baseRisk        = +(baseContracts * stopDist * dollarPerPoint).toFixed(2)
 
-  // Exact SL and TP prices
-  const stopPrice   = side === 'LONG'
-    ? +(currentPrice - stopDistance).toFixed(2)
-    : +(currentPrice + stopDistance).toFixed(2)
-  const targetPrice = side === 'LONG'
-    ? +(currentPrice + targetDistance).toFixed(2)
-    : +(currentPrice - targetDistance).toFixed(2)
+  // Hard cap — never lose more than $500 per trade
+  const contracts   = baseRisk > 500
+    ? Math.max(1, Math.floor(500 / (stopDist * dollarPerPoint)))
+    : baseContracts
 
-  // Position sizing — risk X% of account, scaled by expectancy
-  const riskMult    = sampleSize >= 8
-    ? Math.max(0.5, Math.min(1.5, 1 + expectancy * 0.5))
-    : 1.0
-  const riskDollars = accountBalance * (BASE_RISK_PCT / 100) * riskMult
-  const rawContracts = Math.max(1, Math.round(riskDollars / (stopDistance * MULTIPLIER)))
-  // Cap at 2 contracts until 30+ backtests, 3 until 50+, then uncapped
-  // During eval cap at 2, reduce to 1 if daily loss mounting
-  let maxContracts = sampleSize >= 50 ? 6 : sampleSize >= 30 ? 3 : 2
+  // During eval cap at 2 max, drop to 1 after -$300 on day
+  let finalContracts = contracts
   if (EVAL_MODE) {
-    const evalS = await getEvalStats()
-    maxContracts = evalS.todayPnl <= -300 ? 1 : EVAL_MAX_CONTRACTS
+    try {
+      const evalS = await getEvalStats()
+      const evalMax = evalS.todayPnl <= -300 ? 1 : EVAL_MAX_CONTRACTS
+      finalContracts = Math.min(contracts, evalMax)
+    } catch {}
   }
-  const contracts = Math.min(rawContracts, maxContracts)
 
-  console.log(`[RISK] ATR:${atrVal.toFixed(1)} stop:${stopDistance}pts RR:${rrRatio} contracts:${contracts} winRate:${winRate}% n:${sampleSize} riskMult:${riskMult}`)
+  const actualRisk  = +(finalContracts * stopDist * dollarPerPoint).toFixed(2)
+  const stopPrice   = side === 'LONG'
+    ? +(currentPrice - stopDist).toFixed(2)
+    : +(currentPrice + stopDist).toFixed(2)
+  const targetPrice = side === 'LONG'
+    ? +(currentPrice + targetDist).toFixed(2)
+    : +(currentPrice - targetDist).toFixed(2)
 
-  return { stopPrice, targetPrice, stopDistance, targetDistance, rrRatio, contracts, winRate, expectancy, sampleSize }
+  console.log(`[RISK] Score:${score}(${scoreMultiplier}x) ATR:${atrVal.toFixed(1)} risk:$${adjustedRisk} contracts:${finalContracts} SL:${stopPrice} TP:${targetPrice}`)
+
+  return { stopPrice, targetPrice, stopDistance: stopDist, targetDistance: targetDist, rrRatio: 2, contracts: finalContracts, riskDollars: actualRisk, winRate, expectancy, sampleSize }
 }
 
 // ── Market structure detection ────────────────────────────────────
@@ -190,35 +190,25 @@ function detectStructure(candles) {
   return 'neutral'
 }
 
-// ── HTF Bias (updates every hour) ────────────────────────────────
+// ── HTF Bias ──────────────────────────────────────────────────────
 async function updateBias(candles) {
-  // 1H proxy: last 100 bars (~8 hours of recent structure)
   const bias1H = detectStructure(candles.slice(-100))
-  // 4H proxy: full bar set (~40 hours for bigger picture)
   const bias4H = detectStructure(candles)
-
   let direction = 'both', threshold = 5, reason = ''
-
   if (bias1H === 'bullish' && bias4H === 'bullish') {
-    direction = 'long';  threshold = 4
-    reason = '1H+4H bullish → LONG only, threshold 4'
+    direction = 'long';  threshold = 4; reason = '1H+4H bullish → LONG only, threshold 4'
   } else if (bias1H === 'bearish' && bias4H === 'bearish') {
-    direction = 'short'; threshold = 4
-    reason = '1H+4H bearish → SHORT only, threshold 4'
+    direction = 'short'; threshold = 4; reason = '1H+4H bearish → SHORT only, threshold 4'
   } else if (bias1H !== 'neutral' && bias4H !== 'neutral' && bias1H !== bias4H) {
-    direction = 'both';  threshold = 7
-    reason = `Conflicting (1H:${bias1H} 4H:${bias4H}) → both, threshold 7`
+    direction = 'both';  threshold = 7; reason = `Conflicting (1H:${bias1H} 4H:${bias4H}) → both, threshold 7`
   } else {
-    direction = 'both';  threshold = 5
-    reason = `Unclear (1H:${bias1H} 4H:${bias4H}) → both, threshold 5`
+    direction = 'both';  threshold = 5; reason = `Unclear (1H:${bias1H} 4H:${bias4H}) → both, threshold 5`
   }
-
   const bias = { bias1H, bias4H, direction, threshold, reason, updatedAt: Date.now() }
   console.log(`[BIAS] ${reason}`)
   try { await sbSet('bot_log', bias, 'bias') } catch {}
   return bias
 }
-
 async function getBias() {
   try {
     const cached = await sbGet('bot_log', 'bias')
@@ -239,43 +229,93 @@ function getSessionThreshold(baseThreshold) {
   return baseThreshold
 }
 
+// ── IV Walls ──────────────────────────────────────────────────────
+function calcIVWalls(candles, currentPrice) {
+  if (!candles.length) return null
+  const now       = new Date()
+  const todayDate = now.toISOString().slice(0, 10)
+  const days = {}
+  for (const bar of candles) {
+    const date = new Date(bar.time).toISOString().slice(0, 10)
+    if (!days[date]) days[date] = { open: bar.open, high: bar.high, low: bar.low, close: bar.close }
+    days[date].high  = Math.max(days[date].high, bar.high)
+    days[date].low   = Math.min(days[date].low,  bar.low)
+    days[date].close = bar.close
+  }
+  const sortedDays = Object.entries(days).sort((a,b) => a[0].localeCompare(b[0]))
+  const today      = days[todayDate]
+  const yesterday  = sortedDays.length >= 2 ? sortedDays[sortedDays.length - 2][1] : null
+
+  let intradayBias = 'neutral'
+  if (today) {
+    const recentDays = sortedDays.slice(-6, -1)
+    const avgRange   = recentDays.length > 0
+      ? recentDays.reduce((s, [,d]) => s + (d.high - d.low), 0) / recentDays.length : 200
+    const upper = today.open + avgRange, lower = today.open - avgRange
+    const range = upper - lower
+    if ((upper - currentPrice) / range < 0.15) intradayBias = 'nearUpper'
+    if ((currentPrice - lower) / range < 0.15) intradayBias = 'nearLower'
+  }
+
+  const keyLevels = []
+  if (yesterday) {
+    keyLevels.push({ price: yesterday.high, label: 'PDH', type: 'resistance' })
+    keyLevels.push({ price: yesterday.low,  label: 'PDL', type: 'support' })
+  }
+  const weekDays = sortedDays.slice(-5)
+  if (weekDays.length >= 3) {
+    keyLevels.push({ price: Math.max(...weekDays.map(([,d]) => d.high)), label: 'PWH', type: 'resistance' })
+    keyLevels.push({ price: Math.min(...weekDays.map(([,d]) => d.low)),  label: 'PWL', type: 'support' })
+  }
+  if (today) keyLevels.push({ price: today.open, label: "Today's Open", type: 'pivot' })
+
+  const nearestResistance = keyLevels.filter(l => l.price > currentPrice).sort((a,b) => a.price - b.price)[0]
+  const nearestSupport    = keyLevels.filter(l => l.price < currentPrice).sort((a,b) => b.price - a.price)[0]
+
+  let wallBias = intradayBias
+  if (nearestResistance && (nearestResistance.price - currentPrice) < 30) wallBias = 'nearUpper'
+  if (nearestSupport    && (currentPrice - nearestSupport.price)    < 30) wallBias = 'nearLower'
+
+  console.log(`[WALLS] PDH:${yesterday?.high} PDL:${yesterday?.low} | Resistance:${nearestResistance?.label}@${nearestResistance?.price} | Support:${nearestSupport?.label}@${nearestSupport?.price} | bias:${wallBias}`)
+
+  return {
+    keyLevels, nearestResistance, nearestSupport,
+    pdh: yesterday?.high, pdl: yesterday?.low,
+    wallBias, intradayBias,
+    distToResistance: nearestResistance ? +(nearestResistance.price - currentPrice).toFixed(2) : null,
+    distToSupport:    nearestSupport    ? +(currentPrice - nearestSupport.price).toFixed(2)    : null,
+  }
+}
+
 // ── Paper broker ──────────────────────────────────────────────────
 async function getTrades()  { return await sbGet('paper_trades')  || [] }
 async function getAccount() {
   return await sbGet('paper_account') || {
-    startingBalance: 25000, balance: 25000,
-    realizedPnl: 0, totalTrades: 0, wins: 0, losses: 0,
+    startingBalance: 25000, balance: 25000, realizedPnl: 0, totalTrades: 0, wins: 0, losses: 0,
   }
 }
 function getOpenPos(trades) { return trades.find(t => !t.exitTime) || null }
 
 async function openTrade(trades, { side, entryPrice, contracts, stopLoss, takeProfit }) {
-  const trade = {
-    id: Date.now(), symbol: SYMBOL, side,
-    entryPrice, quantity: contracts,
-    stopLoss, takeProfit,
-    entryTime: Date.now(),
-    exitTime: null, exitPrice: null, exitReason: null,
-    pnlDollars: null, multiplier: MULTIPLIER,
-  }
-  trades.push(trade)
+  trades.push({
+    id: Date.now(), symbol: SYMBOL, side, entryPrice, quantity: contracts,
+    stopLoss, takeProfit, entryTime: Date.now(),
+    exitTime: null, exitPrice: null, exitReason: null, pnlDollars: null, multiplier: MULTIPLIER,
+  })
   await sbSet('paper_trades', trades)
   console.log(`📈 Opened ${side} ${contracts}x @ ${entryPrice} | SL:${stopLoss} TP:${takeProfit}`)
-  return trade
 }
 
 async function closeTrade(trades, exitPrice, exitReason) {
   const idx = trades.findIndex(t => !t.exitTime)
   if (idx === -1) return null
-  const t      = trades[idx]
-  const pts    = t.side === 'LONG' ? exitPrice - t.entryPrice : t.entryPrice - exitPrice
-  const pnl    = pts * MULTIPLIER * (t.quantity || 1)
-  trades[idx]  = { ...t, exitTime: Date.now(), exitPrice, exitReason, pnlDollars: pnl }
+  const t   = trades[idx]
+  const pts = t.side === 'LONG' ? exitPrice - t.entryPrice : t.entryPrice - exitPrice
+  const pnl = pts * MULTIPLIER * (t.quantity || 1)
+  trades[idx] = { ...t, exitTime: Date.now(), exitPrice, exitReason, pnlDollars: pnl }
   await sbSet('paper_trades', trades)
-  const acc    = await getAccount()
-  acc.balance     += pnl
-  acc.realizedPnl += pnl
-  acc.totalTrades++
+  const acc = await getAccount()
+  acc.balance += pnl; acc.realizedPnl += pnl; acc.totalTrades++
   if (pnl > 0) acc.wins++; else acc.losses++
   await sbSet('paper_account', acc)
   console.log(`📉 Closed ${t.side} ${t.quantity}x @ ${exitPrice} P&L:${pnl >= 0 ? '+' : ''}$${pnl.toFixed(0)} (${exitReason})`)
@@ -335,9 +375,7 @@ function buildIndicators(candles) {
 function evalSignal(candles, ind, signalBody, openPos) {
   try {
     const fn  = new Function('i', 'candles', 'ind', 'pos', signalBody)
-    const pos = openPos
-      ? { isOpen: true,  side: openPos.side }
-      : { isOpen: false, side: 'FLAT' }
+    const pos = openPos ? { isOpen: true, side: openPos.side } : { isOpen: false, side: 'FLAT' }
     return fn(candles.length - 1, candles, ind, pos)
   } catch (e) { console.error('Signal error:', e.message); return null }
 }
@@ -347,12 +385,10 @@ async function canTrade(factors) {
   try {
     const mem = await sbGet('learning_memory') || { trades: [] }
     if (!mem.trades?.length) return true
-    const key = Object.entries(factors || {})
-      .filter(([,v]) => v).map(([k]) => k).sort().join('+')
+    const key = Object.entries(factors || {}).filter(([,v]) => v).map(([k]) => k).sort().join('+')
     if (!key) return true
     const matching = mem.trades.filter(t => {
-      const tk = Object.entries(t.factors || {})
-        .filter(([,v]) => v).map(([k]) => k).sort().join('+')
+      const tk = Object.entries(t.factors || {}).filter(([,v]) => v).map(([k]) => k).sort().join('+')
       return tk === key
     })
     if (matching.length < 8) return true
@@ -372,7 +408,6 @@ async function log(type, msg, detail = null) {
       await sbSet('bot_log', existing.slice(0, 200))
     }
   } catch {}
-  // Track blocked trades separately
   if (type === 'filter' && msg.includes('BLOCKED')) {
     try {
       const stats = await sbGet('bot_stats') || { blockedTrades: 0, totalSignals: 0, tradesOpened: 0 }
@@ -397,66 +432,49 @@ async function log(type, msg, detail = null) {
   }
 }
 
-
 // ── Eval Stats ────────────────────────────────────────────────────
 async function getEvalStats() {
-  const trades    = await getTrades()
-  const account   = await getAccount()
-  const closed    = trades.filter(t => t.exitTime && t.pnlDollars !== null)
-  const botStats  = await sbGet('bot_stats', 'main') || {}
-  const prevEval  = botStats.eval || {}
-
-  // Trailing EOD drawdown — floor moves up as balance grows
-  // Peak EOD balance = highest EOD balance recorded
-  const peakBalance   = prevEval.peakEodBalance || EVAL_ACCOUNT_SIZE
-  const currentFloor  = peakBalance - EVAL_MAX_DRAWDOWN
-  const totalProfit   = account.balance - EVAL_ACCOUNT_SIZE
-  const drawdownUsed  = Math.max(0, currentFloor - account.balance)  // how much below floor
-  const totalDrawdown = -drawdownUsed
-
-  // Today's P&L
-  const todayStart = new Date()
-  todayStart.setUTCHours(0, 0, 0, 0)
-  const todayTrades = closed.filter(t => t.exitTime >= todayStart.getTime())
-  const todayPnl    = todayTrades.reduce((s, t) => s + (t.pnlDollars || 0), 0)
-
-  // Progress to target
-  const progressPct  = +((totalProfit / EVAL_PROFIT_TARGET) * 100).toFixed(1)
-  const drawdownPct  = +((drawdownUsed / EVAL_MAX_DRAWDOWN) * 100).toFixed(1)
-  const drawdownLeft = EVAL_MAX_DRAWDOWN - drawdownUsed  // how much left before blown
-
-  // Save stats to Supabase for Vercel display
+  const trades  = await getTrades()
+  const account = await getAccount()
+  const closed  = trades.filter(t => t.exitTime && t.pnlDollars !== null)
+  const botStats = await sbGet('bot_stats', 'main') || {}
+  const prevEval = botStats.eval || {}
+  const peakBalance  = prevEval.peakEodBalance || EVAL_ACCOUNT_SIZE
+  const currentFloor = peakBalance - EVAL_MAX_DRAWDOWN
+  const totalProfit  = account.balance - EVAL_ACCOUNT_SIZE
+  const drawdownUsed = Math.max(0, currentFloor - account.balance)
+  const todayStart   = new Date(); todayStart.setUTCHours(0, 0, 0, 0)
+  const todayPnl     = closed.filter(t => t.exitTime >= todayStart.getTime())
+    .reduce((s, t) => s + (t.pnlDollars || 0), 0)
   const stats = {
-    totalProfit, totalDrawdown, todayPnl,
-    progressPct, drawdownPct, drawdownLeft,
-    balance: account.balance,
-    target: EVAL_PROFIT_TARGET,
-    maxDrawdown: EVAL_MAX_DRAWDOWN,
-    dailyLimit: EVAL_DAILY_LIMIT,
+    totalProfit, todayPnl,
+    totalDrawdown: -drawdownUsed,
+    drawdownLeft:  EVAL_MAX_DRAWDOWN - drawdownUsed,
+    progressPct:   +((totalProfit / EVAL_PROFIT_TARGET) * 100).toFixed(1),
+    drawdownPct:   +((drawdownUsed / EVAL_MAX_DRAWDOWN) * 100).toFixed(1),
+    balance:       account.balance,
+    peakEodBalance: peakBalance,
+    currentFloor,
+    drawdownUsed,
     passed: totalProfit >= EVAL_PROFIT_TARGET,
-    blown:  totalDrawdown <= -EVAL_MAX_DRAWDOWN,
+    blown:  account.balance <= currentFloor,
     updatedAt: Date.now(),
   }
-
-  try { await sbSet('bot_stats', { ...await sbGet('bot_stats') || {}, eval: stats }, 'main') } catch {}
-
+  try { await sbSet('bot_stats', { ...botStats, eval: stats }, 'main') } catch {}
   return stats
 }
-
 
 // ── Main cycle ────────────────────────────────────────────────────
 async function runCycle() {
   const now = new Date()
   console.log(`\n⏰ ${now.toISOString()}`)
 
-  // Load strategy
   const strategy = await sbGet('active_strategy')
   if (!strategy?.signalBody) {
     console.log('⏳ No active strategy — click 🤖 Set Active in app')
     return
   }
 
-  // Fetch bars
   let candles
   try {
     candles = await fetchBars(500)
@@ -468,33 +486,22 @@ async function runCycle() {
   const currentPrice = candles[candles.length - 1].close
   await log('price', `${PRIMARY}: ${currentPrice}`)
 
-  // Log eval status every cycle
   if (EVAL_MODE) {
     const evalStats = await getEvalStats()
     console.log(`[EVAL] Profit: $${evalStats.totalProfit.toFixed(0)}/${EVAL_PROFIT_TARGET} (${evalStats.progressPct}%) | Drawdown left: $${evalStats.drawdownLeft.toFixed(0)} | Today: ${evalStats.todayPnl >= 0 ? '+' : ''}$${evalStats.todayPnl.toFixed(0)}`)
   }
 
-  // Update bias (recompute every hour using same bars)
   let bias = await getBias()
-  if (!bias || (now.getUTCMinutes() < 6)) {
-    bias = await updateBias(candles)
-  }
+  if (!bias || (now.getUTCMinutes() < 6)) bias = await updateBias(candles)
   console.log(`[BIAS] 1H:${bias.bias1H} 4H:${bias.bias4H} → ${bias.direction.toUpperCase()} threshold:${bias.threshold}`)
 
-  // Calculate IV walls
   const walls = calcIVWalls(candles, currentPrice)
-  if (walls) {
-    console.log(`[IV WALLS] HV:${walls.hv}% dailyMove:${walls.dailyMove}pts | 1σ: ${walls.lower1sigma}-${walls.upper1sigma} | 2σ: ${walls.lower2sigma}-${walls.upper2sigma} | wallBias:${walls.wallBias}`)
-    // Save walls to Supabase so Vercel app can display them
-    try { await sbSet('bot_log', walls, 'iv_walls') } catch {}
-  }
+  if (walls) { try { await sbSet('bot_log', walls, 'iv_walls') } catch {} }
 
-  // Build indicators
   const ind = buildIndicators(candles)
   const li  = candles.length - 1
   console.log(`[INDICATORS] sweepLow:${ind.liquiditySweepLow[li]} | sweepHigh:${ind.liquiditySweepHigh[li]} | fvgBull:${ind.bullishFVG[li]} | fvgBear:${ind.bearishFVG[li]} | bosBull:${ind.bosBullish[li]} | bosBear:${ind.bosBearish[li]} | obBull:${ind.rejectionBlockBullish[li]} | obBear:${ind.rejectionBlockBearish[li]}`)
 
-  // Load trades and check SL/TP
   const trades  = await getTrades()
   const openPos = getOpenPos(trades)
 
@@ -502,11 +509,8 @@ async function runCycle() {
     const price = currentPrice
     const pos   = openPos
 
-    // Check stop loss
     if (pos.stopLoss !== null && pos.stopLoss !== undefined) {
-      const slHit = pos.side === 'LONG'
-        ? price <= pos.stopLoss
-        : price >= pos.stopLoss
+      const slHit = pos.side === 'LONG' ? price <= pos.stopLoss : price >= pos.stopLoss
       if (slHit) {
         console.log(`🛑 Stop loss hit! Price:${price} SL:${pos.stopLoss}`)
         await closeTrade(trades, price, 'stopLoss')
@@ -515,11 +519,8 @@ async function runCycle() {
       }
     }
 
-    // Check take profit
     if (pos.takeProfit !== null && pos.takeProfit !== undefined) {
-      const tpHit = pos.side === 'LONG'
-        ? price >= pos.takeProfit
-        : price <= pos.takeProfit
+      const tpHit = pos.side === 'LONG' ? price >= pos.takeProfit : price <= pos.takeProfit
       if (tpHit) {
         console.log(`🎯 Take profit hit! Price:${price} TP:${pos.takeProfit}`)
         await closeTrade(trades, price, 'takeProfit')
@@ -529,21 +530,19 @@ async function runCycle() {
     }
 
     // Time-based exit
-  if (openPos) {
     const barsOpen   = Math.floor((Date.now() - openPos.entryTime) / (5 * 60 * 1000))
     const stopDist   = Math.abs(openPos.entryPrice - openPos.stopLoss)
     const currentR   = stopDist > 0 ? (currentPrice - openPos.entryPrice) / stopDist : 0
-    const recentData = candles.slice(-20)
-    const recentHigh = Math.max(...recentData.map(b => b.high))
+    const recentHigh = Math.max(...candles.slice(-20).map(b => b.high))
 
     if (barsOpen > 30 && currentR < 0.25) {
       await closeTrade(trades, currentPrice, 'Time exit: 30 bars no progress')
-      await log('trade', `Time exit @ ${currentPrice}`, `${barsOpen} bars open, only ${currentR.toFixed(2)}R`)
+      await log('trade', `Time exit @ ${currentPrice}`, `${barsOpen} bars, ${currentR.toFixed(2)}R`)
       return
     }
     if (barsOpen > 50 && recentHigh <= (openPos.entryPrice + stopDist * 0.5)) {
       await closeTrade(trades, currentPrice, 'Time exit: 50 bars stalling')
-      await log('trade', `Time exit @ ${currentPrice}`, `${barsOpen} bars, price stalling`)
+      await log('trade', `Time exit @ ${currentPrice}`, `${barsOpen} bars stalling`)
       return
     }
     if (barsOpen > 75) {
@@ -551,23 +550,17 @@ async function runCycle() {
       await log('trade', `Time exit @ ${currentPrice}`, `Max hold time reached`)
       return
     }
+
+    const pts = pos.side === 'LONG' ? price - pos.entryPrice : pos.entryPrice - price
+    const unrealizedPnl = pts * MULTIPLIER * (pos.quantity || 1)
+    console.log(`[POSITION] ${pos.side} ${pos.quantity}x @ ${pos.entryPrice} | Current:${price} | SL:${pos.stopLoss} TP:${pos.takeProfit} | Unrealized:${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(0)}`)
   }
 
-  // Log current P&L on open position
-    const pts = openPos.side === 'LONG'
-      ? price - openPos.entryPrice
-      : openPos.entryPrice - price
-    const unrealizedPnl = pts * MULTIPLIER * (openPos.quantity || 1)
-    console.log(`[POSITION] ${openPos.side} ${openPos.quantity}x @ ${openPos.entryPrice} | Current:${price} | SL:${openPos.stopLoss} TP:${openPos.takeProfit} | Unrealized:${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(0)}`)
-  }
-
-  // Evaluate signal
   const signal = evalSignal(candles, ind, strategy.signalBody, openPos)
   await log('signal', `Signal: ${signal?.action || 'NONE'}`, signal?.reason || null)
 
   if (!signal?.action || signal.action === 'none' || signal.action === 'NONE') return
 
-  // Handle exit signal
   if ((signal.action === 'exit' || signal.action === 'EXIT') && openPos) {
     await closeTrade(trades, currentPrice, 'signal')
     await log('trade', `Closed on EXIT signal @ ${currentPrice}`)
@@ -578,71 +571,46 @@ async function runCycle() {
   const isSell = signal.action === 'sell' || signal.action === 'SHORT'
 
   if ((isBuy || isSell) && !openPos) {
-    // ── Eval mode risk check ──────────────────────────────────────
+    // Eval mode risk check
     if (EVAL_MODE) {
       const evalStats = await getEvalStats()
-
-      // Check total drawdown
-      if (evalStats.totalDrawdown <= -EVAL_MAX_DRAWDOWN + 100) {
-        await log('eval', `⛔ EVAL ACCOUNT BLOWN — drawdown $${evalStats.totalDrawdown.toFixed(0)} hit limit`)
-        return
+      if (evalStats.blown || evalStats.totalDrawdown <= -EVAL_MAX_DRAWDOWN + 100) {
+        await log('eval', `⛔ EVAL ACCOUNT BLOWN`); return
       }
-
-      // Check daily loss limit
       if (evalStats.todayPnl <= -EVAL_DAILY_LIMIT) {
-        await log('eval', `⛔ DAILY LIMIT HIT — lost $${Math.abs(evalStats.todayPnl).toFixed(0)} today, no more trades`)
-        return
+        await log('eval', `⛔ DAILY LIMIT HIT — $${Math.abs(evalStats.todayPnl).toFixed(0)} lost today`); return
       }
-
-      // Check if already passed
-      if (evalStats.totalProfit >= EVAL_PROFIT_TARGET) {
-        await log('eval', `🎉 EVAL PASSED — profit $${evalStats.totalProfit.toFixed(0)} hit target $${EVAL_PROFIT_TARGET}`)
-        return  // stop trading once passed
-      }
-
-      // Reduce size if daily loss is mounting
-      if (evalStats.todayPnl <= -300) {
-        console.log(`[EVAL] Daily loss $${evalStats.todayPnl.toFixed(0)} — dropping to 1 contract`)
+      if (evalStats.passed) {
+        await log('eval', `🎉 EVAL PASSED — $${evalStats.totalProfit.toFixed(0)} profit`); return
       }
     }
 
-    // 0. IV Wall filter — don't fight the walls
+    // IV Wall filter
     if (walls) {
       if (isBuy && walls.wallBias === 'nearUpper') {
-        const level = walls.nearestResistance
-        await log('filter', `⛔ BLOCKED LONG — near ${level?.label || 'resistance'} @ ${level?.price} (${walls.distToResistance}pts away)`)
-        return
+        await log('filter', `⛔ BLOCKED LONG — near ${walls.nearestResistance?.label}@${walls.nearestResistance?.price} (${walls.distToResistance}pts)`); return
       }
       if (isSell && walls.wallBias === 'nearLower') {
-        const level = walls.nearestSupport
-        await log('filter', `⛔ BLOCKED SHORT — near ${level?.label || 'support'} @ ${level?.price} (${walls.distToSupport}pts away)`)
-        return
+        await log('filter', `⛔ BLOCKED SHORT — near ${walls.nearestSupport?.label}@${walls.nearestSupport?.price} (${walls.distToSupport}pts)`); return
       }
     }
 
-    // 1. Bias filter
-    if (bias.direction === 'long' && isSell) {
-      await log('filter', `⛔ BLOCKED SHORT — bias bullish (1H:${bias.bias1H} 4H:${bias.bias4H})`); return
-    }
-    if (bias.direction === 'short' && isBuy) {
-      await log('filter', `⛔ BLOCKED LONG — bias bearish (1H:${bias.bias1H} 4H:${bias.bias4H})`); return
-    }
+    // Bias filter
+    if (bias.direction === 'long'  && isSell) { await log('filter', `⛔ BLOCKED SHORT — bias bullish`); return }
+    if (bias.direction === 'short' && isBuy)  { await log('filter', `⛔ BLOCKED LONG — bias bearish`);  return }
 
-    // 2. Session threshold filter
+    // Session threshold
     const sessionThreshold = getSessionThreshold(bias.threshold)
 
-    // 3. Learning filter
+    // Learning filter
     const allowed = await canTrade(signal.factors || {})
-    if (!allowed) {
-      await log('filter', `⛔ BLOCKED — negative expectancy in learning memory`); return
-    }
+    if (!allowed) { await log('filter', `⛔ BLOCKED — negative expectancy`); return }
 
-    // 4. Dynamic risk calculation
+    // Dynamic risk
     const side    = isBuy ? 'LONG' : 'SHORT'
     const account = await getAccount()
-    const risk    = await calcDynamicRisk(candles, side, currentPrice, signal.factors || {}, account.balance)
+    const risk    = await calcDynamicRisk(candles, side, currentPrice, signal.factors || {}, account.balance, signal.score || 4)
 
-    // 5. Open trade
     await openTrade(trades, {
       side,
       entryPrice: currentPrice,
@@ -653,16 +621,16 @@ async function runCycle() {
 
     await log('trade',
       `Opened ${side} ${risk.contracts}x @ ${currentPrice}`,
-      `SL:${risk.stopPrice} TP:${risk.targetPrice} RR:${risk.rrRatio} winRate:${risk.winRate}% bias:${bias.direction}`
+      `SL:${risk.stopPrice} TP:${risk.targetPrice} RR:${risk.rrRatio} score:${signal.score || 4} bias:${bias.direction}`
     )
   }
 }
 
 // ── Start ─────────────────────────────────────────────────────────
 console.log('🤖 TradingBot — Railway 24/7')
-console.log(`   Poll: every ${POLL_MS/60000}min | Bias: hourly | Risk: dynamic`)
+console.log(`   Poll: every ${POLL_MS/60000}min | Bias: hourly | Risk: score+ATR+$500cap`)
 
-process.on('SIGTERM', () => console.log('SIGTERM ignored — staying alive'))
+process.on('SIGTERM', () => console.log('SIGTERM ignored'))
 process.on('SIGINT',  () => console.log('SIGINT ignored'))
 process.on('uncaughtException',  e => console.error('Uncaught:', e.message))
 process.on('unhandledRejection', e => console.error('Unhandled:', e?.message || e))
@@ -670,7 +638,7 @@ process.on('unhandledRejection', e => console.error('Unhandled:', e?.message || 
 runCycle()
 setInterval(runCycle, POLL_MS)
 
-// Record EOD balance at midnight ET (4am UTC) to update trailing floor
+// EOD peak balance update at 4am UTC
 setInterval(async () => {
   const now = new Date()
   if (now.getUTCHours() === 4 && now.getUTCMinutes() < 6) {
@@ -678,139 +646,15 @@ setInterval(async () => {
       const account = await getAccount()
       const stats   = await sbGet('bot_stats', 'main') || {}
       const evalS   = stats.eval || {}
-      const currentPeak = evalS.peakEodBalance || EVAL_ACCOUNT_SIZE
-      if (account.balance > currentPeak) {
+      const peak    = evalS.peakEodBalance || EVAL_ACCOUNT_SIZE
+      if (account.balance > peak) {
         evalS.peakEodBalance = account.balance
         stats.eval = evalS
         await sbSet('bot_stats', stats, 'main')
-        console.log(`[EVAL] EOD peak updated to $${account.balance.toFixed(0)} — new floor: $${(account.balance - EVAL_MAX_DRAWDOWN).toFixed(0)}`)
+        console.log(`[EVAL] EOD peak: $${account.balance.toFixed(0)} → floor: $${(account.balance - EVAL_MAX_DRAWDOWN).toFixed(0)}`)
       }
     } catch (e) { console.error('EOD update error:', e.message) }
   }
 }, 60_000)
+
 setInterval(() => console.log('💓 heartbeat'), 30_000)
-
-// ── IV Walls — Intraday Range + Key Levels ──────────────────────
-// Option B: Intraday walls from today's open (tighter, more relevant)
-// Option C: Key levels from yesterday's high/low and weekly high/low
-
-function calcIVWalls(candles, currentPrice) {
-  if (!candles.length) return null
-
-  const now = new Date()
-  const todayDate = now.toISOString().slice(0, 10)
-
-  // ── Group bars by day ─────────────────────────────────────────
-  const days = {}
-  for (const bar of candles) {
-    const date = new Date(bar.time).toISOString().slice(0, 10)
-    if (!days[date]) days[date] = { open: bar.open, high: bar.high, low: bar.low, close: bar.close, bars: [] }
-    days[date].high  = Math.max(days[date].high, bar.high)
-    days[date].low   = Math.min(days[date].low,  bar.low)
-    days[date].close = bar.close
-    days[date].bars.push(bar)
-  }
-
-  const sortedDays = Object.entries(days).sort((a,b) => a[0].localeCompare(b[0]))
-  const today      = days[todayDate]
-  const yesterday  = sortedDays.length >= 2 ? sortedDays[sortedDays.length - 2][1] : null
-
-  // ── Option B: Intraday walls from today's open ────────────────
-  let intradayUpper = null, intradayLower = null
-  let intradayBias  = 'neutral'
-
-  if (today) {
-    // Use average daily range from last 5 days as expected move
-    const recentDays = sortedDays.slice(-6, -1)  // last 5 days excluding today
-    const avgRange   = recentDays.length > 0
-      ? recentDays.reduce((s, [,d]) => s + (d.high - d.low), 0) / recentDays.length
-      : 200
-
-    intradayUpper = +(today.open + avgRange).toFixed(2)
-    intradayLower = +(today.open - avgRange).toFixed(2)
-
-    // How far has price moved from open today?
-    const intradayRange = intradayUpper - intradayLower
-    const pctToIntradayUpper = +((intradayUpper - currentPrice) / intradayRange * 100).toFixed(1)
-    const pctToIntradayLower = +((currentPrice - intradayLower) / intradayRange * 100).toFixed(1)
-
-    if (pctToIntradayUpper < 15) intradayBias = 'nearUpper'
-    if (pctToIntradayLower < 15) intradayBias = 'nearLower'
-  }
-
-  // ── Option C: Key price levels ────────────────────────────────
-  const keyLevels = []
-
-  // Yesterday's high and low — major ICT reference points
-  if (yesterday) {
-    keyLevels.push({ price: yesterday.high, label: 'PDH', type: 'resistance' })
-    keyLevels.push({ price: yesterday.low,  label: 'PDL', type: 'support' })
-  }
-
-  // Weekly high and low (last 5 trading days)
-  const weekDays = sortedDays.slice(-5)
-  if (weekDays.length >= 3) {
-    const weekHigh = Math.max(...weekDays.map(([,d]) => d.high))
-    const weekLow  = Math.min(...weekDays.map(([,d]) => d.low))
-    keyLevels.push({ price: weekHigh, label: 'PWH', type: 'resistance' })
-    keyLevels.push({ price: weekLow,  label: 'PWL', type: 'support' })
-  }
-
-  // Today's open — key intraday level
-  if (today) {
-    keyLevels.push({ price: today.open, label: "Today's Open", type: 'pivot' })
-  }
-
-  // ── Find nearest key levels to current price ──────────────────
-  const nearestResistance = keyLevels
-    .filter(l => l.price > currentPrice)
-    .sort((a,b) => a.price - b.price)[0]
-
-  const nearestSupport = keyLevels
-    .filter(l => l.price < currentPrice)
-    .sort((a,b) => b.price - a.price)[0]
-
-  // ── Combined wall bias ────────────────────────────────────────
-  // Use intraday bias as primary, key levels as confirmation
-  let wallBias = intradayBias
-
-  // Override if price is within 30pts of a key level
-  if (nearestResistance && (nearestResistance.price - currentPrice) < 30) {
-    wallBias = 'nearUpper'
-  }
-  if (nearestSupport && (currentPrice - nearestSupport.price) < 30) {
-    wallBias = 'nearLower'
-  }
-
-  const result = {
-    // Intraday walls
-    intradayUpper, intradayLower,
-    todayOpen:  today?.open || null,
-    todayHigh:  today?.high || null,
-    todayLow:   today?.low  || null,
-
-    // Key levels
-    keyLevels,
-    nearestResistance,
-    nearestSupport,
-
-    // Yesterday's levels
-    pdh: yesterday?.high || null,
-    pdl: yesterday?.low  || null,
-
-    // Bias
-    wallBias,
-    intradayBias,
-
-    // Distance to nearest levels
-    distToResistance: nearestResistance ? +(nearestResistance.price - currentPrice).toFixed(2) : null,
-    distToSupport:    nearestSupport    ? +(currentPrice - nearestSupport.price).toFixed(2)    : null,
-  }
-
-  console.log(`[WALLS] PDH:${result.pdh} PDL:${result.pdl} | Nearest resistance:${nearestResistance?.label}@${nearestResistance?.price} (${result.distToResistance}pts away) | Support:${nearestSupport?.label}@${nearestSupport?.price} (${result.distToSupport}pts away) | bias:${wallBias}`)
-
-  return result
-}
-// PATCH: raise min sample before sizing up
-// This is appended and will override the inline logic via a wrapper
-

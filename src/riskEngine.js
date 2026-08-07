@@ -70,7 +70,8 @@ export function calcDynamicRisk({
   const hasData        = sampleSize > 0 && winRate != null
   const breakevenRR     = hasData ? (1 - winRate / 100) / (winRate / 100) : 2.0
   const confidenceBonus = hasData ? confidence * 1.5 : 0
-  const rrRatio         = hasData ? Math.max(2.0, +(breakevenRR + confidenceBonus).toFixed(2)) : 2.0
+  const RR_CAP          = 4.0
+  const rrRatio         = hasData ? Math.min(RR_CAP, Math.max(2.0, +(breakevenRR + confidenceBonus).toFixed(2))) : 2.0
 
   const targetDist = +(stopDist * rrRatio).toFixed(2)
 

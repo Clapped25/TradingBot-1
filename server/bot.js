@@ -633,8 +633,51 @@ process.on('SIGINT',  () => console.log('SIGINT ignored'))
 process.on('uncaughtException',  e => console.error('Uncaught:', e.message))
 process.on('unhandledRejection', e => console.error('Unhandled:', e?.message || e))
 
+// Fast loop — check SL/TP every 1 minute
+async function fastCheck() {
+  try {
+    const trades  = await getTrades()
+    const openPos = getOpenPos(trades)
+    if (!openPos) return
+
+    const res  = await fetch('https://tv-price-feed-production.up.railway.app/bars')
+    const data = await res.json()
+    const bars = data.bars || []
+    if (bars.length === 0) return
+
+    const price = bars[bars.length - 1].close
+    console.log(`[FAST] Price:${price} | ${openPos.side} SL:${openPos.stopLoss} TP:${openPos.takeProfit}`)
+
+    if (openPos.stopLoss) {
+      const slHit = openPos.side === 'LONG' ? price <= openPos.stopLoss : price >= openPos.stopLoss
+      if (slHit) {
+        console.log(`🛑 SL HIT @ ${price}`)
+        await closeTrade(trades, price, 'stopLoss')
+        await log('trade', `Stop loss hit @ ${price}`, `SL was ${openPos.stopLoss}`)
+        return
+      }
+    }
+
+    if (openPos.takeProfit) {
+      const tpHit = openPos.side === 'LONG' ? price >= openPos.takeProfit : price <= openPos.takeProfit
+      if (tpHit) {
+        console.log(`🎯 TP HIT @ ${price}`)
+        await closeTrade(trades, price, 'takeProfit')
+        await log('trade', `Take profit hit @ ${price}`, `TP was ${openPos.takeProfit}`)
+        return
+      }
+    }
+
+    const pts = openPos.side === 'LONG' ? price - openPos.entryPrice : openPos.entryPrice - price
+    const pnl = pts * MULTIPLIER * (openPos.quantity || 1)
+    console.log(`[POSITION] Unrealized: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(0)}`)
+
+  } catch (e) { console.error('Fast check error:', e.message) }
+}
+
 runCycle()
 setInterval(runCycle, POLL_MS)
+setInterval(fastCheck, 60_000)
 
 // EOD peak balance update at 4am UTC
 setInterval(async () => {

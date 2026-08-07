@@ -15,9 +15,10 @@ import EvalDashboard from './EvalDashboard'
 const PRIMARY   = 'NQ'   // using NQ for signal (strategy is NQ-based)
 const SYMBOL    = 'MNQ'  // paper trading in MNQ micros
 const TF        = '5m'
-const PRICE_POLL_MS = 60_000 // 60s — reads from TradingView real-time feed
-const SIGNAL_POLL_MS  = 5 * 60_000  // 5min signal re-eval
+const PRICE_POLL_MS  = 2 * 60_000
+const SIGNAL_POLL_MS = 10 * 60_000
 const BARS_NEEDED     = 120       // last 10 hours of 5-min bars
+const [tvBars, setTvBars] = useState([])
 
 // ── Eval mode — mirrors server/bot.js prop-firm eval rules ────────
 const EVAL_DAILY_LIMIT   = 600  // trading halts for the day once realized loss hits this
@@ -90,15 +91,23 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
     setActivityLog(prev => [entry, ...prev].slice(0, 50))
   }
 
+  const fetchTVBars = useCallback(async () => {
+  try {
+    const res  = await fetch('https://tv-price-feed-production.up.railway.app/bars')
+    const data = await res.json()
+    const bars = data.bars || []
+    setTvBars(bars)
+    return bars
+  } catch (e) { return [] }
+}, [])
+
+
   // ── Fetch latest price from TradingView ────────────────────────────
   const fetchPrice = useCallback(async () => {
     try {
-      const res    = await fetch('https://tv-price-feed-production.up.railway.app/bars')
-      const data   = await res.json()
-      const bars   = data.bars || []
-      if (bars.length === 0) return
-      const latest = bars[bars.length - 1]
-      const price  = latest.close
+     const bars  = await fetchTVBars()
+    if (bars.length === 0) return
+    const price = bars[bars.length - 1].close
 
       setLivePrice(price)
       setPriceAge(Date.now())
@@ -125,9 +134,7 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
 
     try {
      // Fetch real-time bars from TradingView price feed
-      const tvRes  = await fetch('https://tv-price-feed-production.up.railway.app/bars')
-      const tvData = await tvRes.json()
-      const bars1m = tvData.bars || []
+     const bars1m = tvBars.length > 0 ? tvBars : await fetchTVBars()
 
       // Group 1-minute bars into 5-minute candles
       const bars5m = []

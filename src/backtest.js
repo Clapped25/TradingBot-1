@@ -1,5 +1,5 @@
 import { calculatePositionSize, getContractSpec } from './account'
-import { shouldTakeTrade } from './tradeMemory'
+import { shouldTakeTrade, getSession } from './tradeMemory'
 import { detectRegime } from './marketRegime'
 import { calcDynamicRisk } from './riskEngine'
 
@@ -73,13 +73,19 @@ export function createBacktestEngine(config = {}) {
       entryPrice: entry.price,
       entryReason: entry.reason,
       entryTime: entry.time,
+      session: getSession(entry.time),
       contracts: entry.contracts,
       riskDollars: entry.riskDollars,
       factors: entry.factors,
       regime: entry.regime,
       stopPrice: entry.stopPrice,
       takeProfitPrice: entry.takeProfitPrice,
+      plannedRR: entry.rrRatio,
+      rMultiple: stopDist > 0 ? +rMultipleAchieved.toFixed(2) : null,
+      atr: entry.atr,
+      entryWinRate: entry.winRate,
       mfePts, maePts, mfeR, maeR, qualityScore,
+      barsHeld: i - entryIdx,
       balanceAfter: balance,
     }
     trades.push(exitTrade)

@@ -8,7 +8,7 @@ import SignalDiagnostics from './SignalDiagnostics'
 import FeedbackLoop from './FeedbackLoop'
 import { buildIndicators } from '../indicators'
 import { createBacktestEngine, calcStats, walkForwardValidate, runBacktest } from '../backtest'
-import { recordBacktestTrades, getCombinationStats, getAllTrades, getQualityStats } from '../tradeMemory'
+import { recordBacktestTrades, getCombinationStats, getAllTrades, getQualityStats, SESSION_LABELS } from '../tradeMemory'
 import { saveLearningSnapshot } from '../learningHistory'
 import { getOpenPositionAt } from '../account'
 import { getStrategyFeedback } from '../claude'
@@ -703,6 +703,8 @@ export default function BacktestResults({
                       Sell <b style={{ color: 'var(--text)' }}>{t.price.toFixed(2)}</b>
                       <span style={{ fontSize: 11, color: 'var(--text-dim)', marginLeft: 6 }}>
                         {t.contracts}× · {t.barIndex - (t.entryBarIdx ?? 0)} bars
+                        {t.rMultiple != null && <> · {t.rMultiple >= 0 ? '+' : ''}{t.rMultiple}R</>}
+                        {entry?.time != null && <> · {new Date(entry.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>}
                       </span>
                     </span>
                     <span className="spacer" />
@@ -726,6 +728,20 @@ export default function BacktestResults({
                       </div>
                       <div style={{ marginBottom: 6, fontSize: 11, color: 'var(--text-dim)' }}>
                         Stop: {t.stopPrice?.toFixed(2)} · Target: {t.takeProfitPrice?.toFixed(2)} · {t.contracts} contract{t.contracts !== 1 ? 's' : ''} · {(win ? '+' : '')}{t.pnlPct.toFixed(2)}%
+                      </div>
+                      <div style={{ marginBottom: 6, fontSize: 11, color: 'var(--text-dim)' }}>
+                        R achieved: <b style={{ color: win ? 'var(--green)' : 'var(--red)' }}>{t.rMultiple != null ? `${t.rMultiple >= 0 ? '+' : ''}${t.rMultiple}R` : '—'}</b>
+                        {t.plannedRR != null && <>&nbsp;/ planned {t.plannedRR}R</>}
+                        &nbsp;·&nbsp;MFE {t.mfeR != null ? `${t.mfeR}R` : '—'} · MAE {t.maeR != null ? `${t.maeR}R` : '—'}
+                        &nbsp;·&nbsp;Quality {t.qualityScore != null ? t.qualityScore : '—'}
+                      </div>
+                      <div style={{ marginBottom: 6, fontSize: 11, color: 'var(--text-dim)' }}>
+                        Held {t.barsHeld ?? (t.barIndex - (t.entryBarIdx ?? 0))} bars
+                        &nbsp;·&nbsp;Regime: {t.regime ?? 'unknown'}
+                        &nbsp;·&nbsp;Session: {SESSION_LABELS[t.session] ?? t.session ?? '—'}
+                        &nbsp;·&nbsp;Risk: ${t.riskDollars?.toFixed(0) ?? '—'}
+                        {t.atr != null && <>&nbsp;·&nbsp;ATR {t.atr}</>}
+                        {t.entryWinRate != null && <>&nbsp;·&nbsp;Learned WR {t.entryWinRate}%</>}
                       </div>
                       <div style={{ color: 'var(--text-dim)', fontSize: 11 }}>
                         Entry: {new Date(entry?.time ?? 0).toLocaleString()}

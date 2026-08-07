@@ -39,6 +39,30 @@ export function createBacktestEngine(config = {}) {
   let openLow = Infinity    // lowest low seen while in position (for MAE)
   const trades = []
 
+  // ── Daily bias tracking ────────────────────────────────────────
+  // Tracks yesterday's open/close and whether today has already
+  // "proven bullish" (closed back above today's open at least once).
+  let todayKey = null
+  let todayOpen = null
+  let todayProvenBullish = false
+  let prevDayOpen = null
+  let prevDayClose = null
+
+  function updateDayState(i, candles) {
+    const c = candles[i]
+    const key = new Date(c.time).toDateString()
+    if (key !== todayKey) {
+      if (todayKey != null) {
+        prevDayOpen = todayOpen
+        prevDayClose = candles[i - 1].close
+      }
+      todayKey = key
+      todayOpen = c.open
+      todayProvenBullish = false
+    }
+    if (c.close > todayOpen) todayProvenBullish = true
+  }
+
   function closeTrade(i, candles, exitPrice, reason) {
     const entry = trades[trades.length - 1]
     const pnlPct = (exitPrice - entry.price) / entry.price * 100
@@ -98,6 +122,7 @@ export function createBacktestEngine(config = {}) {
   function evaluateBar(i, candles, indicators, signalFn) {
     if (i < 2) return null
     const c = candles[i]
+    updateDayState(i, candles)
 
     if (pos === 'long') {
       openHigh = Math.max(openHigh, c.high)
@@ -147,6 +172,18 @@ export function createBacktestEngine(config = {}) {
     try { result = signalFn(i, candles, indicators, pos) } catch { result = { action: 'none' } }
     if (result.action !== 'buy') return null
 
+    // ── Displacement filter ───────────────────────────────────────
+    // Entry bar must be a real bullish close, not a doji/small body —
+    // require the close to sit in the top 25% of the bar's range.
+    const barRange = c.high - c.low
+    const closePosInRange = barRange > 0 ? (c.close - c.low) / barRange : 0
+    if (!(c.close > c.open && closePosInRange >= 0.75)) return null
+
+    // ── Daily bias filter ─────────────────────────────────────────
+    // If yesterday closed bearish, no longs today until the market
+    // has proven bullish (today's close has traded back above today's open).
+    const prevDayBearish = prevDayOpen != null && prevDayClose != null && prevDayClose < prevDayOpen
+    if (prevDayBearish && !todayProvenBullish) return null
 
     const entryPrice = c.close
     let stopPrice = result.stopPrice

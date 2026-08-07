@@ -3,7 +3,7 @@ import { buildIndicators } from '../indicators'
 import { fetchLatestPrice, fetchMonthRange } from '../massiveFinance'
 import {
   openTrade, closeTrade, getOpenPosition, getTrades,
-  getAccount, getUnrealizedPnl, checkAutoExit, checkTimeExit, isInCooldown, getStats, resetPaperAccount,
+  getAccount, getUnrealizedPnl, checkAutoExit, checkTimeExit, isInCooldown, getTodayPnl, getStats, resetPaperAccount,
 } from '../paperBroker'
 import { generatePineScript } from '../pineScriptExporter'
 import { shouldTakeTrade, recordLiveTrade, getSession, SESSION_LABELS } from '../tradeMemory'
@@ -19,6 +19,10 @@ const TF        = '5m'
 const PRICE_POLL_MS   = 60_000   // 60s — 1 API call per min, within free tier
 const SIGNAL_POLL_MS  = 5 * 60_000  // 5min signal re-eval
 const BARS_NEEDED     = 120       // last 10 hours of 5-min bars
+
+// ── Eval mode — mirrors server/bot.js prop-firm eval rules ────────
+const EVAL_DAILY_LIMIT   = 600  // trading halts for the day once realized loss hits this
+const EVAL_MAX_CONTRACTS = 2    // cap contracts at 2, drop to 1 after -$300 on the day
 
 export default function LiveMode({ strategy, onBack, onBacktest }) {
   // ── Price & data ────────────────────────────────────────────────
@@ -238,6 +242,13 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
 
   // ── Trade actions ───────────────────────────────────────────────
   function placeOrder(side) {
+    // ── Eval daily loss limit ──────────────────────────────────────
+    const todayPnl = getTodayPnl()
+    if (todayPnl <= -EVAL_DAILY_LIMIT) {
+      logActivity('filter', `⛔ BLOCKED ${side}`, `Daily limit hit — $${Math.abs(todayPnl).toFixed(0)} lost today (max $${EVAL_DAILY_LIMIT})`)
+      return
+    }
+
     // ── Cooldown between trades ───────────────────────────────────
     if (isInCooldown(3, 5)) {
       logActivity('filter', `⛔ BLOCKED ${side}`, 'Cooldown active — waiting after last close')
@@ -265,6 +276,10 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
       decision,
       baseRiskPct: 1,
     })
+
+    // ── Eval contract cap — 2 max, drop to 1 after -$300 on the day ─
+    const evalMaxContracts = todayPnl <= -300 ? 1 : EVAL_MAX_CONTRACTS
+    risk.contracts = Math.min(risk.contracts, evalMaxContracts)
     setRiskCalc(risk)
 
     // Use manual SL/TP if set, otherwise use dynamic calculation

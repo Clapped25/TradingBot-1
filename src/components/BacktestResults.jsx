@@ -14,6 +14,7 @@ import { getOpenPositionAt } from '../account'
 import { getStrategyFeedback } from '../claude'
 import { saveVersion, getPreviousVersion, addTestedMonths, getUnseenMonth } from '../strategyVersioning'
 import { fetchSelectedMonths, getAvailableMonths } from '../massiveFinance'
+import { exportAndDownload } from '../exportTradesForML'
 
 const SPEED_MS   = [800, 400, 200, 100, 50, 16, 16, 16]  // ms between renders
 const BATCH_SIZE = [  1,   1,   1,   1,  1,  5, 20, 50]  // bars per render at high speeds
@@ -670,10 +671,23 @@ export default function BacktestResults({
             Trade log — {logTrades.length} completed trade{logTrades.length !== 1 ? 's' : ''}
           </div>
           {isFinished && exits.length > 0 && stats && (
-            <span style={{ fontSize: 11, color: 'var(--text-dim)', marginLeft: 'auto' }}>
-              Avg win: <span style={{ color: 'var(--green)' }}>+{stats.avgWin}%</span>
-              &nbsp;&nbsp;Avg loss: <span style={{ color: 'var(--red)' }}>{stats.avgLoss}%</span>
-            </span>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginLeft: 'auto' }}>
+              <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                Avg win: <span style={{ color: 'var(--green)' }}>+{stats.avgWin}%</span>
+                &nbsp;&nbsp;Avg loss: <span style={{ color: 'var(--red)' }}>{stats.avgLoss}%</span>
+              </span>
+              <button
+                className="btn-sm"
+                onClick={() => {
+                  const result = exportAndDownload(exits, candles)
+                  setAlert({ type: 'entry', reason: `✓ Exported ${result.rows} trades with ${result.features} features for XGBoost training` })
+                  setTimeout(() => setAlert(null), 3000)
+                }}
+                style={{ background: 'var(--blue)', color: '#fff', border: 'none' }}
+              >
+                📊 Export for XGBoost
+              </button>
+            </div>
           )}
         </div>
 

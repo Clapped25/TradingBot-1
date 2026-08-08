@@ -52,24 +52,25 @@ async function fetchBars(limit = 500) {
   const res  = await fetch('https://tv-price-feed-production.up.railway.app/bars')
   const data = await res.json()
 
-  // Get 1-minute bars and group into 5-minute candles
+ // Get 1-minute bars
   const bars1m = (data.bars || []).slice(-limit * 5)
   if (bars1m.length === 0) { console.log('No bars from TV feed'); return [] }
 
-  // Group 1-minute bars into 5-minute candles
-  const bars5m = []
-  for (let i = 0; i < bars1m.length; i += 5) {
-    const slice = bars1m.slice(i, i + 5)
-    if (slice.length === 0) continue
-    bars5m.push({
-      time:  slice[0].time,
-      open:  slice[0].open,
-      high:  Math.max(...slice.map(b => b.high)),
-      low:   Math.min(...slice.map(b => b.low)),
-      close: slice[slice.length - 1].close,
-    })
+  // Group by actual 5-minute time boundaries (matches TradingView exactly)
+  const fiveMinMs = 5 * 60 * 1000
+  const grouped   = {}
+  for (const bar of bars1m) {
+    const boundary = Math.floor(bar.time / fiveMinMs) * fiveMinMs
+    if (!grouped[boundary]) {
+      grouped[boundary] = { time: boundary, open: bar.open, high: bar.high, low: bar.low, close: bar.close }
+    } else {
+      grouped[boundary].high  = Math.max(grouped[boundary].high, bar.high)
+      grouped[boundary].low   = Math.min(grouped[boundary].low,  bar.low)
+      grouped[boundary].close = bar.close
+    }
   }
-
+  const bars5m = Object.values(grouped).sort((a, b) => a.time - b.time)
+  
   const last = bars5m[bars5m.length - 1]
   console.log(`Got ${bars5m.length} 5min bars from TradingView. Latest: ${new Date(last.time).toISOString()} close:${last.close}`)
   return bars5m.slice(-limit)

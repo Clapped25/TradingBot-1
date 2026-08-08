@@ -136,25 +136,22 @@ export default function LiveMode({ strategy, onBack, onBacktest }) {
      // Fetch real-time bars from TradingView price feed
      const bars1m = tvBars.length > 0 ? tvBars : await fetchTVBars()
 
-      // Group 1-minute bars into 5-minute candles
-      const bars5m = []
-      for (let i = 0; i < bars1m.length; i += 5) {
-        const slice = bars1m.slice(i, i + 5)
-        if (slice.length === 0) continue
-        bars5m.push({
-          time:  slice[0].time,
-          open:  slice[0].open,
-          high:  Math.max(...slice.map(b => b.high)),
-          low:   Math.min(...slice.map(b => b.low)),
-          close: slice[slice.length - 1].close,
-        })
+// Group by actual 5-minute time boundaries (matches TradingView exactly)
+      const fiveMinMs = 5 * 60 * 1000
+      const grouped   = {}
+      for (const bar of bars1m) {
+        const boundary = Math.floor(bar.time / fiveMinMs) * fiveMinMs
+        if (!grouped[boundary]) {
+          grouped[boundary] = { time: boundary, open: bar.open, high: bar.high, low: bar.low, close: bar.close }
+        } else {
+          grouped[boundary].high  = Math.max(grouped[boundary].high, bar.high)
+          grouped[boundary].low   = Math.min(grouped[boundary].low,  bar.low)
+          grouped[boundary].close = bar.close
+        }
       }
-      const allBars = bars5m.slice(-BARS_NEEDED)
-
-      if (allBars.length < 20) {
-        setSignalError('Not enough bars yet — market may be closed or outside trading hours')
-        return
-      }
+      const allBars = Object.values(grouped)
+        .sort((a, b) => a.time - b.time)
+        .slice(-BARS_NEEDED)
 
       const indicators = buildIndicators(allBars, strategy.indicatorDefs || strategy.indicators || [])
       const signalFn   = new Function('i', 'candles', 'ind', 'pos', strategy.signalBody)

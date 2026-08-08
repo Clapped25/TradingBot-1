@@ -4,11 +4,12 @@
 
 const BASE_URL    = 'https://api.massive.com'
 const CACHE_PREFIX = 'massive_bars_'
-const RATE_LIMIT_MS = 13000  // 13 seconds between calls = max 4.6 calls/min (safe under 5/min limit)
+const RATE_LIMIT_MS = 20000  // 20 seconds between calls = 3 calls/min (safe under 5/min limit)
+const MAX_RETRIES   = 3
 
 let lastCallTime = 0
 
-async function rateLimitedFetch(url) {
+async function rateLimitedFetch(url, attempt = 1) {
   const now     = Date.now()
   const elapsed = now - lastCallTime
   if (elapsed < RATE_LIMIT_MS) {
@@ -18,6 +19,17 @@ async function rateLimitedFetch(url) {
   }
   lastCallTime = Date.now()
   const res = await fetch(url)
+
+  // Handle 429 — wait longer and retry
+  if (res.status === 429) {
+    if (attempt >= MAX_RETRIES) throw new Error('Massive API rate limit exceeded — please wait 60 seconds and try again')
+    const retryWait = 60000 * attempt  // 60s, 120s, 180s
+    console.log(`[Massive] 429 rate limit hit — waiting ${retryWait/1000}s before retry ${attempt}/${MAX_RETRIES}...`)
+    await new Promise(r => setTimeout(r, retryWait))
+    lastCallTime = 0  // reset so next call goes immediately after wait
+    return rateLimitedFetch(url, attempt + 1)
+  }
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
     throw new Error(`Massive API error ${res.status}: ${err.message || res.statusText}`)
@@ -169,10 +181,9 @@ export async function fetchSelectedMonths(symbolKey, timeframe, monthList) {
 }
 
 export async function fetchCorrelatedPair(timeframe, monthList) {
-  const [es, nq] = await Promise.all([
-    fetchSelectedMonths('ES', timeframe, monthList),
-    fetchSelectedMonths('NQ', timeframe, monthList),
-  ])
+  // Sequential not parallel — avoids hitting rate limit
+  const es = await fetchSelectedMonths('ES', timeframe, monthList)
+  const nq = await fetchSelectedMonths('NQ', timeframe, monthList)
   return { es, nq }
 }
 

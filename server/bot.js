@@ -371,11 +371,11 @@ function buildIndicators(candles) {
 }
 
 // ── Signal evaluation ─────────────────────────────────────────────
-function evalSignal(candles, ind, signalBody, openPos) {
+function evalSignal(candles, ind, signalBody, openPos, session = 'newyork') {
   try {
-    const fn  = new Function('i', 'candles', 'ind', 'pos', signalBody)
+    const fn  = new Function('i', 'candles', 'ind', 'pos', 'session', signalBody)
     const pos = openPos ? { isOpen: true, side: openPos.side } : { isOpen: false, side: 'FLAT' }
-    return fn(candles.length - 1, candles, ind, pos)
+    return fn(candles.length - 1, candles, ind, pos, session)
   } catch (e) { console.error('Signal error:', e.message); return null }
 }
 
@@ -555,7 +555,12 @@ async function runCycle() {
     console.log(`[POSITION] ${pos.side} ${pos.quantity}x @ ${pos.entryPrice} | Current:${price} | SL:${pos.stopLoss} TP:${pos.takeProfit} | Unrealized:${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(0)}`)
   }
 
-  const signal = evalSignal(candles, ind, strategy.signalBody, openPos)
+  const utcHour      = now.getUTCHours()
+  const sessionName  = utcHour >= 13 && utcHour < 21 ? 'newyork'
+    : utcHour >= 7  && utcHour < 12 ? 'london'
+    : utcHour >= 23 || utcHour < 4  ? 'asian'
+    : 'offhours'
+  const signal = evalSignal(candles, ind, strategy.signalBody, openPos, sessionName)
   await log('signal', `Signal: ${signal?.action || 'NONE'}`, signal?.reason || null)
 
   if (!signal?.action || signal.action === 'none' || signal.action === 'NONE') return

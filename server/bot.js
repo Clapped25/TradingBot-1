@@ -380,7 +380,7 @@ function buildIndicators(candles) {
     swingHigh: swH, swingLow: swL,
     turtleSoupLong, turtleSoupShort,
   }
-
+}
 
 // ── Signal evaluation ─────────────────────────────────────────────
 function evalSignal(candles, ind, signalBody, openPos, session = 'newyork') {
@@ -717,4 +717,3 @@ setInterval(async () => {
 }, 60_000)
 
 setInterval(() => console.log('💓 heartbeat'), 30_000)
-}

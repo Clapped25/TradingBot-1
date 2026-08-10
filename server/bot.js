@@ -382,12 +382,11 @@ function buildIndicators(candles) {
   }
 }
 
-// ── Signal evaluation ─────────────────────────────────────────────
 function evalSignal(candles, ind, signalBody, openPos, session = 'newyork') {
   try {
-    const fn  = new Function('i', 'candles', 'ind', 'pos', 'session', signalBody)
+    const fn  = new Function('i', 'candles', 'ind', 'pos', signalBody)
     const pos = openPos ? { isOpen: true, side: openPos.side } : { isOpen: false, side: 'FLAT' }
-    return fn(candles.length - 1, candles, ind, pos, session)
+    return fn(candles.length - 1, candles, ind, pos)
   } catch (e) { console.error('Signal error:', e.message); return null }
 }
 

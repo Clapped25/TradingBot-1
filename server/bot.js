@@ -358,6 +358,17 @@ function buildIndicators(candles) {
     if (candles[i-1].close < candles[i-1].open && candles[i].close > candles[i-1].open) obBull[i] = true
     if (candles[i-1].close > candles[i-1].open && candles[i].close < candles[i-1].open) obBear[i] = true
   }
+
+// Turtle Soup
+  const turtleSoupLong  = new Array(n).fill(false)
+  const turtleSoupShort = new Array(n).fill(false)
+  for (let i = 21; i < n; i++) {
+    const low20  = Math.min(...candles.slice(i-20, i).map(b => b.low))
+    const high20 = Math.max(...candles.slice(i-20, i).map(b => b.high))
+    if (candles[i].low < low20 && candles[i].close > low20) turtleSoupLong[i] = true
+    if (candles[i].high > high20 && candles[i].close < high20) turtleSoupShort[i] = true
+  }
+
   return {
     liquiditySweepLow: sweepLow, liquiditySweepHigh: sweepHigh,
     bosBullish: bosBull, bosBearish: bosBear,
@@ -367,8 +378,9 @@ function buildIndicators(candles) {
     cisdBullish: bosBull, cisdBearish: bosBear,
     smtBullish: new Array(n).fill(false), smtBearish: new Array(n).fill(false),
     swingHigh: swH, swingLow: swL,
+    turtleSoupLong, turtleSoupShort,
   }
-}
+
 
 // ── Signal evaluation ─────────────────────────────────────────────
 function evalSignal(candles, ind, signalBody, openPos, session = 'newyork') {

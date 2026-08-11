@@ -526,17 +526,19 @@ async function runCycle() {
         console.log(`🛑 Stop loss hit! Price:${price} SL:${pos.stopLoss}`)
         await closeTrade(trades, price, 'stopLoss')
         await log('trade', `Stop loss hit @ ${price}`, `SL was ${pos.stopLoss}`)
+        await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
         return
       }
     }
 
     if (pos.takeProfit !== null && pos.takeProfit !== undefined) {
       const tpHit = pos.side === 'LONG' ? price >= pos.takeProfit : price <= pos.takeProfit
-      if (tpHit) {
-        console.log(`🎯 Take profit hit! Price:${price} TP:${pos.takeProfit}`)
-        await closeTrade(trades, price, 'takeProfit')
-        await log('trade', `Take profit hit @ ${price}`, `TP was ${pos.takeProfit}`)
-        return
+     if (tpHit) {
+      console.log(`🎯 Take profit hit! Price:${price} TP:${pos.takeProfit}`)
+      await closeTrade(trades, price, 'takeProfit')
+      await log('trade', `Take profit hit @ ${price}`, `TP was ${pos.takeProfit}`)
+      await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
+      return
       }
     }
 
@@ -546,19 +548,22 @@ async function runCycle() {
     const currentR   = stopDist > 0 ? (currentPrice - openPos.entryPrice) / stopDist : 0
     const recentHigh = Math.max(...candles.slice(-20).map(b => b.high))
 
-    if (barsOpen > 30 && currentR < 0.25) {
+  if (barsOpen > 30 && currentR < 0.25) {
       await closeTrade(trades, currentPrice, 'Time exit: 30 bars no progress')
       await log('trade', `Time exit @ ${currentPrice}`, `${barsOpen} bars, ${currentR.toFixed(2)}R`)
+      await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
       return
     }
     if (barsOpen > 50 && recentHigh <= (openPos.entryPrice + stopDist * 0.5)) {
       await closeTrade(trades, currentPrice, 'Time exit: 50 bars stalling')
       await log('trade', `Time exit @ ${currentPrice}`, `${barsOpen} bars stalling`)
+      await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
       return
     }
     if (barsOpen > 75) {
       await closeTrade(trades, currentPrice, 'Time exit: 75 bars max')
       await log('trade', `Time exit @ ${currentPrice}`, `Max hold time reached`)
+      await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
       return
     }
 
@@ -572,6 +577,23 @@ async function runCycle() {
     : utcHour >= 7  && utcHour < 12 ? 'london'
     : utcHour >= 23 || utcHour < 4  ? 'asian'
     : 'offhours'
+
+// Require fresh sweep before re-entry after any trade close
+  const sweepReset = await sbGet('bot_log', 'sweep_reset')
+  if (sweepReset?.requireNewSweep) {
+    const freshSweep = ind.liquiditySweepLow[candles.length - 1] ||
+                       ind.liquiditySweepLow[candles.length - 2] ||
+                       ind.liquiditySweepHigh[candles.length - 1] ||
+                       ind.liquiditySweepHigh[candles.length - 2]
+    if (freshSweep) {
+      await sbSet('bot_log', { requireNewSweep: false, updatedAt: Date.now() }, 'sweep_reset')
+      console.log('[SWEEP] Fresh sweep detected — re-entry now allowed')
+    } else {
+      await log('filter', '⛔ WAITING — need fresh sweep before re-entry')
+      return
+    }
+  }
+
   const signal = evalSignal(candles, ind, strategy.signalBody, openPos, sessionName)
   await log('signal', `Signal: ${signal?.action || 'NONE'}`, signal?.reason || null)
 

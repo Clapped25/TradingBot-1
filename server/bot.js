@@ -578,18 +578,25 @@ async function runCycle() {
     : utcHour >= 23 || utcHour < 4  ? 'asian'
     : 'offhours'
 
-// Require fresh sweep before re-entry after any trade close
+// Require fresh sweep AFTER the last trade closed
   const sweepReset = await sbGet('bot_log', 'sweep_reset')
   if (sweepReset?.requireNewSweep) {
-    const freshSweep = ind.liquiditySweepLow[candles.length - 1] ||
-                       ind.liquiditySweepLow[candles.length - 2] ||
-                       ind.liquiditySweepHigh[candles.length - 1] ||
-                       ind.liquiditySweepHigh[candles.length - 2]
+    const lastTrade   = trades.filter(t => t.exitTime).slice(-1)[0]
+    const exitTime    = lastTrade?.exitTime || 0
+    const lastBarTime = candles[candles.length - 1]?.time || 0
+    const prevBarTime = candles[candles.length - 2]?.time || 0
+
+    // Only count sweep as fresh if it happened AFTER the last trade exit
+    const freshSweep = (ind.liquiditySweepLow[candles.length - 1] && lastBarTime > exitTime) ||
+                       (ind.liquiditySweepLow[candles.length - 2] && prevBarTime > exitTime) ||
+                       (ind.liquiditySweepHigh[candles.length - 1] && lastBarTime > exitTime) ||
+                       (ind.liquiditySweepHigh[candles.length - 2] && prevBarTime > exitTime)
+
     if (freshSweep) {
       await sbSet('bot_log', { requireNewSweep: false, updatedAt: Date.now() }, 'sweep_reset')
-      console.log('[SWEEP] Fresh sweep detected — re-entry now allowed')
+      console.log('[SWEEP] Fresh sweep after exit detected — re-entry now allowed')
     } else {
-      await log('filter', '⛔ WAITING — need fresh sweep before re-entry')
+      await log('filter', '⛔ WAITING — need fresh sweep after last trade close')
       return
     }
   }

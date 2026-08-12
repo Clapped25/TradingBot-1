@@ -701,17 +701,19 @@ async function fastCheck() {
         console.log(`🛑 SL HIT @ ${price}`)
         await closeTrade(trades, price, 'stopLoss')
         await log('trade', `Stop loss hit @ ${price}`, `SL was ${openPos.stopLoss}`)
+        await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
         return
       }
     }
 
     if (openPos.takeProfit) {
       const tpHit = openPos.side === 'LONG' ? price >= openPos.takeProfit : price <= openPos.takeProfit
-      if (tpHit) {
-        console.log(`🎯 TP HIT @ ${price}`)
-        await closeTrade(trades, price, 'takeProfit')
-        await log('trade', `Take profit hit @ ${price}`, `TP was ${openPos.takeProfit}`)
-        return
+if (tpHit) {
+      console.log(`🎯 TP HIT @ ${price}`)
+      await closeTrade(trades, price, 'takeProfit')
+      await log('trade', `Take profit hit @ ${price}`, `TP was ${openPos.takeProfit}`)
+      await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
+      return
       }
     }
 

@@ -636,6 +636,13 @@ async function runCycle() {
       if (evalStats.todayPnl <= -EVAL_DAILY_LIMIT) {
         await log('eval', `⛔ DAILY LIMIT HIT — $${Math.abs(evalStats.todayPnl).toFixed(0)} lost today`); return
       }
+      // Consistency rule — no single day > 50% of profit target
+      const EVAL_DAILY_PROFIT_CAP = EVAL_PROFIT_TARGET * 0.50  // $625
+
+      if (evalStats.todayPnl >= EVAL_DAILY_PROFIT_CAP) {
+       await log('eval', `⛔ DAILY PROFIT CAP HIT — $${evalStats.todayPnl.toFixed(0)} today (max $${EVAL_DAILY_PROFIT_CAP})`)
+        return
+      }
       if (evalStats.passed) {
         await log('eval', `🎉 EVAL PASSED — $${evalStats.totalProfit.toFixed(0)} profit`); return
       }

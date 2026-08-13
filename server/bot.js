@@ -703,8 +703,13 @@ async function runCycle() {
           })
         })
         const tpData = await tpRes.json().catch(() => ({}))
-        console.log(`[TRADERSPOST] ${side} ${risk.contracts}x sent | status:${tpRes.status}`)
-        await log('trade', `TradersPost order sent`, `${side} ${risk.contracts}x @ ${currentPrice}`)
+        if (tpData.success) {
+          console.log(`[TRADERSPOST] ✅ ${side} ${risk.contracts}x confirmed | id:${tpData.id}`)
+          await log('trade', `TradersPost order confirmed`, `${side} ${risk.contracts}x @ ${currentPrice} | id:${tpData.id}`)
+        } else {
+          console.log(`[TRADERSPOST] ⚠️ Order not confirmed: ${JSON.stringify(tpData)}`)
+          await log('error', `TradersPost order failed`, JSON.stringify(tpData))
+        }
       } catch (e) {
         console.error(`[TRADERSPOST] Failed: ${e.message}`)
         await log('error', `TradersPost failed`, e.message)

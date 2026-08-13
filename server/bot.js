@@ -609,6 +609,17 @@ async function runCycle() {
   if ((signal.action === 'exit' || signal.action === 'EXIT') && openPos) {
     await closeTrade(trades, currentPrice, 'signal')
     await log('trade', `Closed on EXIT signal @ ${currentPrice}`)
+    const TP_WEBHOOK2 = process.env.TRADERSPOST_WEBHOOK_URL
+    if (TP_WEBHOOK2) {
+      try {
+        await fetch(TP_WEBHOOK2, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ticker: 'MNQ1!', action: 'exit' })
+        })
+        console.log('[TRADERSPOST] Exit order sent')
+      } catch (e) { console.error('[TRADERSPOST] Exit failed:', e.message) }
+    }
     return
   }
 
@@ -668,6 +679,30 @@ async function runCycle() {
       `Opened ${side} ${risk.contracts}x @ ${currentPrice}`,
       `SL:${risk.stopPrice} TP:${risk.targetPrice} RR:${risk.rrRatio} score:${signal.score || 4} bias:${bias.direction}`
     )
+
+    // ── TradersPost — real eval execution ────────────────────────
+    const TP_WEBHOOK = process.env.TRADERSPOST_WEBHOOK_URL
+    if (TP_WEBHOOK) {
+      try {
+        const tpRes = await fetch(TP_WEBHOOK, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ticker:     'MNQ1!',
+            action:     side === 'LONG' ? 'buy' : 'sell',
+            quantity:   risk.contracts,
+            stopLoss:   risk.stopPrice,
+            takeProfit: risk.targetPrice,
+          })
+        })
+        const tpData = await tpRes.json().catch(() => ({}))
+        console.log(`[TRADERSPOST] ${side} ${risk.contracts}x sent | status:${tpRes.status}`)
+        await log('trade', `TradersPost order sent`, `${side} ${risk.contracts}x @ ${currentPrice}`)
+      } catch (e) {
+        console.error(`[TRADERSPOST] Failed: ${e.message}`)
+        await log('error', `TradersPost failed`, e.message)
+      }
+    }
   }
 }
 

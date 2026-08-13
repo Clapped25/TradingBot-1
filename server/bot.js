@@ -90,6 +90,168 @@ function calcATR(candles, period = 14) {
   return sum / period
 }
 
+
+// ── HTF Candle Grouping ──────────────────────────────────────────
+function groupToHTF(bars1m, intervalMs) {
+  const grouped = {}
+  for (const bar of bars1m) {
+    const boundary = Math.floor(bar.time / intervalMs) * intervalMs
+    if (!grouped[boundary]) {
+      grouped[boundary] = { time: boundary, open: bar.open, high: bar.high, low: bar.low, close: bar.close }
+    } else {
+      grouped[boundary].high  = Math.max(grouped[boundary].high, bar.high)
+      grouped[boundary].low   = Math.min(grouped[boundary].low,  bar.low)
+      grouped[boundary].close = bar.close
+    }
+  }
+  return Object.values(grouped).sort((a, b) => a.time - b.time)
+}
+
+function findSwingHighsLows(candles, lookback = 2) {
+  const n   = candles.length
+  const swH = new Array(n).fill(false)
+  const swL = new Array(n).fill(false)
+  for (let i = lookback; i < n - lookback; i++) {
+    let isH = true, isL = true
+    for (let j = 1; j <= lookback; j++) {
+      if (candles[i].high <= candles[i-j].high || candles[i].high <= candles[i+j].high) isH = false
+      if (candles[i].low  >= candles[i-j].low  || candles[i].low  >= candles[i+j].low)  isL = false
+    }
+    swH[i] = isH
+    swL[i] = isL
+  }
+  return { swH, swL }
+}
+
+function detectHTFSweeps(bars1m, candles5m) {
+  const oneHourMs  = 60 * 60 * 1000
+  const fourHourMs = 4 * 60 * 60 * 1000
+  const bars1H = groupToHTF(bars1m, oneHourMs)
+  const bars4H = groupToHTF(bars1m, fourHourMs)
+  const { swH: swH1H, swL: swL1H } = findSwingHighsLows(bars1H, 2)
+  const { swH: swH4H, swL: swL4H } = findSwingHighsLows(bars4H, 2)
+
+  const swing1HHighs = bars1H.filter((b, i) => swH1H[i]).map(b => b.high)
+  const swing1HLows  = bars1H.filter((b, i) => swL1H[i]).map(b => b.low)
+  const swing4HHighs = bars4H.filter((b, i) => swH4H[i]).map(b => b.high)
+  const swing4HLows  = bars4H.filter((b, i) => swL4H[i]).map(b => b.low)
+
+  const n = candles5m.length
+  const results = { sweep1HLow: false, sweep1HHigh: false, sweep4HLow: false, sweep4HHigh: false, sweepStrength: 0 }
+
+  for (let i = Math.max(0, n - 3); i < n; i++) {
+    const c = candles5m[i]
+    for (const lvl of swing1HLows.slice(-10)) {
+      if (c.low < lvl && c.close > lvl) { results.sweep1HLow = true; results.sweepStrength = Math.max(results.sweepStrength, 2) }
+    }
+    for (const lvl of swing1HHighs.slice(-10)) {
+      if (c.high > lvl && c.close < lvl) { results.sweep1HHigh = true; results.sweepStrength = Math.max(results.sweepStrength, 2) }
+    }
+    for (const lvl of swing4HLows.slice(-10)) {
+      if (c.low < lvl && c.close > lvl) { results.sweep4HLow = true; results.sweepStrength = Math.max(results.sweepStrength, 3) }
+    }
+    for (const lvl of swing4HHighs.slice(-10)) {
+      if (c.high > lvl && c.close < lvl) { results.sweep4HHigh = true; results.sweepStrength = Math.max(results.sweepStrength, 3) }
+    }
+  }
+  return results
+}
+
+// ── Persistent Key Levels ────────────────────────────────────────
+async function loadKeyLevels() {
+  try {
+    const data = await sbGet('bot_log', 'key_levels')
+    return data?.levels || []
+  } catch { return [] }
+}
+
+async function saveKeyLevels(levels) {
+  try {
+    await sbSet('bot_log', { levels, updatedAt: Date.now() }, 'key_levels')
+  } catch (e) { console.error('Key levels save error:', e.message) }
+}
+
+function detectNewKeyLevels(bars1m, candles5m, existingLevels) {
+  const newLevels  = []
+  const oneHourMs  = 60 * 60 * 1000
+  const fourHourMs = 4 * 60 * 60 * 1000
+  const now        = Date.now()
+
+  const bars1H = groupToHTF(bars1m, oneHourMs)
+  const bars4H = groupToHTF(bars1m, fourHourMs)
+  const { swH: swH1H, swL: swL1H } = findSwingHighsLows(bars1H, 2)
+  const { swH: swH4H, swL: swL4H } = findSwingHighsLows(bars4H, 2)
+
+  const highs1H = bars1H.filter((b, i) => swH1H[i])
+  const lows1H  = bars1H.filter((b, i) => swL1H[i])
+
+  // Equal highs on 1H
+  for (let i = 0; i < highs1H.length - 1; i++) {
+    for (let j = i + 1; j < highs1H.length; j++) {
+      if (Math.abs(highs1H[i].high - highs1H[j].high) < 30) {
+        const price = (highs1H[i].high + highs1H[j].high) / 2
+        if (!existingLevels.some(l => Math.abs(l.price - price) < 20)) {
+          newLevels.push({ id: `kl_${now}_${Math.random().toString(36).slice(2,6)}`, price: +price.toFixed(2), type: 'equalHighs', timeframe: '1H', strength: 2, direction: 'resistance', formedAt: now, lastSeen: now, touches: 2, consumed: false })
+        }
+      }
+    }
+  }
+
+  // Equal lows on 1H
+  for (let i = 0; i < lows1H.length - 1; i++) {
+    for (let j = i + 1; j < lows1H.length; j++) {
+      if (Math.abs(lows1H[i].low - lows1H[j].low) < 30) {
+        const price = (lows1H[i].low + lows1H[j].low) / 2
+        if (!existingLevels.some(l => Math.abs(l.price - price) < 20)) {
+          newLevels.push({ id: `kl_${now}_${Math.random().toString(36).slice(2,6)}`, price: +price.toFixed(2), type: 'equalLows', timeframe: '1H', strength: 2, direction: 'support', formedAt: now, lastSeen: now, touches: 2, consumed: false })
+        }
+      }
+    }
+  }
+
+  // 4H swing highs/lows as major levels
+  bars4H.forEach((b, i) => {
+    if (swH4H[i] && !existingLevels.some(l => Math.abs(l.price - b.high) < 30)) {
+      newLevels.push({ id: `kl_${now}_${Math.random().toString(36).slice(2,6)}`, price: b.high, type: 'swing4HHigh', timeframe: '4H', strength: 3, direction: 'resistance', formedAt: b.time, lastSeen: now, touches: 1, consumed: false })
+    }
+    if (swL4H[i] && !existingLevels.some(l => Math.abs(l.price - b.low) < 30)) {
+      newLevels.push({ id: `kl_${now}_${Math.random().toString(36).slice(2,6)}`, price: b.low, type: 'swing4HLow', timeframe: '4H', strength: 3, direction: 'support', formedAt: b.time, lastSeen: now, touches: 1, consumed: false })
+    }
+  })
+
+  // Round numbers every 250pts
+  if (candles5m.length > 0) {
+    const price = candles5m[candles5m.length - 1].close
+    const base  = Math.round(price / 250) * 250
+    for (const lvl of [base - 250, base, base + 250]) {
+      if (!existingLevels.some(l => Math.abs(l.price - lvl) < 50)) {
+        newLevels.push({ id: `kl_round_${lvl}`, price: lvl, type: 'roundNumber', timeframe: 'ALL', strength: 2, direction: 'both', formedAt: now, lastSeen: now, touches: 0, consumed: false })
+      }
+    }
+  }
+
+  return newLevels
+}
+
+function updateKeyLevels(levels, currentPrice, atr) {
+  const tolerance = atr * 0.3
+  const updated   = levels.map(l => {
+    const distance = Math.abs(currentPrice - l.price)
+    if (distance < tolerance) {
+      l.touches++
+      l.lastSeen = Date.now()
+      console.log(`[KEY LEVEL] Price near ${l.type}@${l.price} (${l.timeframe} str:${l.strength}) touches:${l.touches}`)
+    }
+    return l
+  }).filter(l => l.touches < 5 || Math.abs(currentPrice - l.price) < atr)
+  const thirtyDays = 30 * 24 * 60 * 60 * 1000
+  return updated.filter(l => l.touches > 0 || (Date.now() - l.formedAt) < thirtyDays)
+}
+
+function getNearKeyLevels(levels, currentPrice, atr) {
+  return levels.filter(l => Math.abs(l.price - currentPrice) < atr * 2)
+}
+
 // ── Dynamic Risk Engine ───────────────────────────────────────────
 // Quality score + fixed dollar risk + ATR volatility scaling + $500 hard cap
 async function calcDynamicRisk(candles, side, currentPrice, factors, accountBalance, signalScore = 4) {
@@ -382,9 +544,10 @@ function buildIndicators(candles) {
   }
 }
 
-function evalSignal(candles, ind, signalBody, openPos, session = 'newyork') {
+function evalSignal(candles, ind, signalBody, openPos, session = 'newyork', htfSweeps = {}) {
   try {
-    const wrappedBody = `const session = "${session}"; ${signalBody}`
+    const htfBonus = htfSweeps.sweepStrength || 0
+    const wrappedBody = `const session = "${session}"; const htfSweepStrength = ${htfBonus}; const htf1HSweep = ${!!(htfSweeps.sweep1HLow || htfSweeps.sweep1HHigh)}; const htf4HSweep = ${!!(htfSweeps.sweep4HLow || htfSweeps.sweep4HHigh)}; ${signalBody}`
     const fn  = new Function('i', 'candles', 'ind', 'pos', wrappedBody)
     const pos = openPos ? { isOpen: true, side: openPos.side } : { isOpen: false, side: 'FLAT' }
     return fn(candles.length - 1, candles, ind, pos)
@@ -486,10 +649,27 @@ async function runCycle() {
     return
   }
 
-  let candles
+  let candles, bars1m
   try {
-    candles = await fetchBars(500)
+    const tvRes  = await fetch('https://tv-price-feed-production.up.railway.app/bars')
+    const tvData = await tvRes.json()
+    bars1m = tvData.bars || []
+    const fiveMinMs = 5 * 60 * 1000
+    const grouped   = {}
+    for (const bar of bars1m) {
+      const boundary = Math.floor(bar.time / fiveMinMs) * fiveMinMs
+      if (!grouped[boundary]) {
+        grouped[boundary] = { time: boundary, open: bar.open, high: bar.high, low: bar.low, close: bar.close }
+      } else {
+        grouped[boundary].high  = Math.max(grouped[boundary].high, bar.high)
+        grouped[boundary].low   = Math.min(grouped[boundary].low,  bar.low)
+        grouped[boundary].close = bar.close
+      }
+    }
+    candles = Object.values(grouped).sort((a, b) => a.time - b.time)
     if (candles.length < 20) { console.log('Not enough bars'); return }
+    const last = candles[candles.length - 1]
+    console.log(`Got ${candles.length} 5min bars from TradingView. Latest: ${new Date(last.time).toISOString()} close:${last.close}`)
   } catch (e) {
     await log('error', 'Bar fetch failed', e.message); return
   }
@@ -512,6 +692,29 @@ async function runCycle() {
   const ind = buildIndicators(candles)
   const li  = candles.length - 1
   console.log(`[INDICATORS] sweepLow:${ind.liquiditySweepLow[li]} | sweepHigh:${ind.liquiditySweepHigh[li]} | fvgBull:${ind.bullishFVG[li]} | fvgBear:${ind.bearishFVG[li]} | bosBull:${ind.bosBullish[li]} | bosBear:${ind.bosBearish[li]} | obBull:${ind.rejectionBlockBullish[li]} | obBear:${ind.rejectionBlockBearish[li]}`)
+
+  // HTF sweep detection
+  const htfSweeps = bars1m && bars1m.length > 60
+    ? detectHTFSweeps(bars1m, candles)
+    : { sweep1HLow: false, sweep1HHigh: false, sweep4HLow: false, sweep4HHigh: false, sweepStrength: 0 }
+  if (htfSweeps.sweepStrength > 0) {
+    console.log(`[HTF] 🔥 Sweep detected! 1H:${htfSweeps.sweep1HLow||htfSweeps.sweep1HHigh} 4H:${htfSweeps.sweep4HLow||htfSweeps.sweep4HHigh} strength:${htfSweeps.sweepStrength}`)
+  }
+
+  // Persistent key levels
+  const atrVal   = calcATR(candles)
+  let keyLevels  = await loadKeyLevels()
+  keyLevels      = updateKeyLevels(keyLevels, currentPrice, atrVal)
+  const newLvls  = bars1m && bars1m.length > 120 ? detectNewKeyLevels(bars1m, candles, keyLevels) : []
+  if (newLvls.length > 0) {
+    keyLevels = [...keyLevels, ...newLvls]
+    console.log(`[KEY LEVELS] ${newLvls.length} new levels. Total: ${keyLevels.length}`)
+  }
+  await saveKeyLevels(keyLevels.slice(0, 100))
+  const nearLevels = getNearKeyLevels(keyLevels, currentPrice, atrVal)
+  if (nearLevels.length > 0) {
+    console.log(`[KEY LEVELS] Near: ${nearLevels.map(l => `${l.type}@${l.price}(str:${l.strength})`).join(' | ')}`)
+  }
 
   const trades  = await getTrades()
   const openPos = getOpenPos(trades)
@@ -601,7 +804,7 @@ async function runCycle() {
     }
   }
 
-  const signal = evalSignal(candles, ind, strategy.signalBody, openPos, sessionName)
+  const signal = evalSignal(candles, ind, strategy.signalBody, openPos, sessionName, htfSweeps)
   await log('signal', `Signal: ${signal?.action || 'NONE'}`, signal?.reason || null)
 
   if (!signal?.action || signal.action === 'none' || signal.action === 'NONE') return
@@ -672,7 +875,12 @@ async function runCycle() {
     // Dynamic risk
     const side    = isBuy ? 'LONG' : 'SHORT'
     const account = await getAccount()
-    const risk    = await calcDynamicRisk(candles, side, currentPrice, signal.factors || {}, account.balance, signal.score || 4)
+    // Score bonus for HTF sweeps + key level confluence
+    const htfBonus2  = htfSweeps.sweepStrength || 0
+    const keyBonus   = nearLevels.some(l => l.strength >= 3) ? 1 : 0
+    const boostedScore = (signal.score || 4) + htfBonus2 + keyBonus
+    if (htfBonus2 > 0 || keyBonus > 0) console.log(`[SCORE] HTF:+${htfBonus2} KeyLevel:+${keyBonus} → score:${boostedScore}`)
+    const risk    = await calcDynamicRisk(candles, side, currentPrice, signal.factors || {}, account.balance, boostedScore)
 
     await openTrade(trades, {
       side,

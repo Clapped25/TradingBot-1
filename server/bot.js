@@ -688,11 +688,11 @@ async function runCycle() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            ticker:     'MNQ1!',
-            action:     side === 'LONG' ? 'buy' : 'sell',
-            quantity:   risk.contracts,
-            stopLoss:   risk.stopPrice,
-            takeProfit: risk.targetPrice,
+           ticker:    'MNQ1!',
+            action:    side === 'LONG' ? 'buy' : 'sell',
+            quantity:  risk.contracts,
+            stopLoss:  { type: 'stop', stopPrice: risk.stopPrice },
+            takeProfit: { type: 'limit', limitPrice: risk.targetPrice },
           })
         })
         const tpData = await tpRes.json().catch(() => ({}))

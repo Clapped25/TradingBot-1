@@ -744,23 +744,22 @@ async function runCycle() {
   const walls = calcIVWalls(candles, currentPrice)
   if (walls) { try { await sbSet('bot_log', walls, 'iv_walls') } catch {} }
 
-  const ind = buildIndicators(candles, smt)
-  const li  = candles.length - 1
-  console.log(`[INDICATORS] sweepLow:${ind.liquiditySweepLow[li]} | sweepHigh:${ind.liquiditySweepHigh[li]} | fvgBull:${ind.bullishFVG[li]} | fvgBear:${ind.bearishFVG[li]} | bosBull:${ind.bosBullish[li]} | bosBear:${ind.bosBearish[li]} | obBull:${ind.rejectionBlockBullish[li]} | obBear:${ind.rejectionBlockBearish[li]}`)
-
   // Fetch MES bars for SMT detection
   let barsMES = []
+  let smt = { smtBullish: false, smtBearish: false }
   try {
     const mesRes  = await fetch('https://tv-price-feed-production.up.railway.app/bars/mes')
     const mesData = await mesRes.json()
     barsMES = mesData.bars || []
-  } catch (e) { console.log('[SMT] MES fetch failed:', e.message) }
+    smt = detectSMT(candles, barsMES)
+    if (smt.smtBullish || smt.smtBearish) {
+      console.log(`[SMT] 🎯 Divergence! Bullish:${smt.smtBullish} Bearish:${smt.smtBearish}`)
+    }
+  } catch (e) { console.log('[SMT] Error:', e.message) }
 
-  // SMT Divergence detection
-  const smt = detectSMT(candles, barsMES)
-  if (smt.smtBullish || smt.smtBearish) {
-    console.log(`[SMT] 🎯 Divergence! Bullish:${smt.smtBullish} Bearish:${smt.smtBearish}`)
-  }
+  const ind = buildIndicators(candles, smt)
+  const li  = candles.length - 1
+  console.log(`[INDICATORS] sweepLow:${ind.liquiditySweepLow[li]} | sweepHigh:${ind.liquiditySweepHigh[li]} | fvgBull:${ind.bullishFVG[li]} | fvgBear:${ind.bearishFVG[li]} | bosBull:${ind.bosBullish[li]} | bosBear:${ind.bosBearish[li]} | obBull:${ind.rejectionBlockBullish[li]} | obBear:${ind.rejectionBlockBearish[li]}`)
 
   // HTF sweep detection
   const htfSweeps = bars1m && bars1m.length > 60

@@ -181,6 +181,24 @@ export function createBacktestEngine(config = {}) {
       }
     }
 
+
+    // ── Sweep reset filter (test this) ────────────────────────────
+    if (config.useSweepFilter) {
+      const lastExit = trades.filter(t => t.type === 'exit').slice(-1)[0]
+      if (lastExit) {
+        const barsSinceExit = i - lastExit.barIndex
+        const freshSweep = indicators.liquiditySweepLow?.[i] || 
+                           indicators.liquiditySweepLow?.[i-1] ||
+                           indicators.liquiditySweepHigh?.[i] ||
+                           indicators.liquiditySweepHigh?.[i-1]
+        const sweepAfterExit = freshSweep && barsSinceExit > 0
+        if (!sweepAfterExit) {
+          return { type: 'blocked', barIndex: i, time: c.time, reason: 'Waiting for fresh sweep after last trade' }
+        }
+      }
+    }
+
+
     // ── Dynamic risk: ATR-based stop + probability-adjusted target ─
     const dynamicRisk = calcDynamicRisk({
       candles:     candles.slice(0, i + 1),

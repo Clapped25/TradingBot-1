@@ -933,8 +933,35 @@ async function runCycle() {
     if (bias.direction === 'long'  && isSell) { await log('filter', `⛔ BLOCKED SHORT — bias bullish`); return }
     if (bias.direction === 'short' && isBuy)  { await log('filter', `⛔ BLOCKED LONG — bias bearish`);  return }
 
-    // Session threshold
+
+    // Block contradicting sweep direction
+    if (isBuy  && ind.liquiditySweepHigh[candles.length - 1]) {
+      await log('filter', '⛔ BLOCKED LONG — sweepHigh active (bearish signal)')
+      return
+    }
+    if (isSell && ind.liquiditySweepLow[candles.length - 1]) {
+      await log('filter', '⛔ BLOCKED SHORT — sweepLow active (bullish signal)')
+      return
+    }
+
+    // Neutral bias — require HTF confirmation
+    if (bias.direction === 'both') {
+      const hasHTFConfirmation = htfSweeps.sweepStrength > 0 ||
+                                 nearLevels.some(l => l.strength >= 3)
+      if (!hasHTFConfirmation) {
+        await log('filter', '⛔ BLOCKED — neutral bias, no HTF confirmation')
+        return
+      }
+      console.log(`[BIAS] Neutral override — HTF confirmation present`)
+    }
+
+// Score threshold check — verify signal score meets bias threshold
+    const signalScore = signal.score || 4
     const sessionThreshold = getSessionThreshold(bias.threshold)
+    if (signalScore < sessionThreshold) {
+      await log('filter', `⛔ BLOCKED — signal score ${signalScore} below threshold ${sessionThreshold}`)
+      return
+    }
 
     // Learning filter
     const allowed = await canTrade(signal.factors || {})

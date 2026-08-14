@@ -483,8 +483,62 @@ async function closeTrade(trades, exitPrice, exitReason) {
   return trades[idx]
 }
 
+
+// ── SMT Divergence ───────────────────────────────────────────────
+// SMT = Smart Money Technique — NQ makes new low/high but MES doesn't
+// This divergence signals institutional activity and potential reversal
+function detectSMT(candlesMNQ, candlesMES) {
+  if (!candlesMES || candlesMES.length < 10 || !candlesMNQ || candlesMNQ.length < 10) {
+    return { smtBullish: false, smtBearish: false }
+  }
+
+  // Group MES 1-min bars into 5-min candles
+  const fiveMinMs = 5 * 60 * 1000
+  const groupedMES = {}
+  for (const bar of candlesMES) {
+    const boundary = Math.floor(bar.time / fiveMinMs) * fiveMinMs
+    if (!groupedMES[boundary]) {
+      groupedMES[boundary] = { time: boundary, open: bar.open, high: bar.high, low: bar.low, close: bar.close }
+    } else {
+      groupedMES[boundary].high  = Math.max(groupedMES[boundary].high, bar.high)
+      groupedMES[boundary].low   = Math.min(groupedMES[boundary].low,  bar.low)
+      groupedMES[boundary].close = bar.close
+    }
+  }
+  const mes5m = Object.values(groupedMES).sort((a, b) => a.time - b.time)
+
+  const n    = Math.min(candlesMNQ.length, mes5m.length)
+  const look = 10  // look back 10 bars
+
+  if (n < look + 2) return { smtBullish: false, smtBearish: false }
+
+  // Get recent candles aligned by time
+  const mnqRecent = candlesMNQ.slice(-look)
+  const mesRecent = mes5m.slice(-look)
+
+  // SMT Bullish: MNQ makes lower low but MES does NOT make lower low
+  // → NQ swept lows but ES held → reversal signal
+  const mnqLow  = Math.min(...mnqRecent.map(b => b.low))
+  const mesLow  = Math.min(...mesRecent.map(b => b.low))
+  const mnqPrevLow = Math.min(...candlesMNQ.slice(-look*2, -look).map(b => b.low))
+  const mesPrevLow = Math.min(...mes5m.slice(-look*2, -look).map(b => b.low))
+
+  const smtBullish = mnqLow < mnqPrevLow && mesLow >= mesPrevLow - 5
+
+  // SMT Bearish: MNQ makes higher high but MES does NOT make higher high
+  // → NQ swept highs but ES held → reversal signal
+  const mnqHigh     = Math.max(...mnqRecent.map(b => b.high))
+  const mesHigh     = Math.max(...mesRecent.map(b => b.high))
+  const mnqPrevHigh = Math.max(...candlesMNQ.slice(-look*2, -look).map(b => b.high))
+  const mesPrevHigh = Math.max(...mes5m.slice(-look*2, -look).map(b => b.high))
+
+  const smtBearish = mnqHigh > mnqPrevHigh && mesHigh <= mesPrevHigh + 5
+
+  return { smtBullish, smtBearish }
+}
+
 // ── Indicators ────────────────────────────────────────────────────
-function buildIndicators(candles) {
+function buildIndicators(candles, smt = {}) {
   const n = candles.length
   const swH = new Array(n).fill(false), swL = new Array(n).fill(false)
   for (let i = 3; i < n-3; i++) {
@@ -538,7 +592,8 @@ function buildIndicators(candles) {
     bullishIFVG: fvgBear, bearishIFVG: fvgBull,
     rejectionBlockBullish: obBull, rejectionBlockBearish: obBear,
     cisdBullish: bosBull, cisdBearish: bosBear,
-    smtBullish: new Array(n).fill(false), smtBearish: new Array(n).fill(false),
+    smtBullish: new Array(n).fill(false).fill(smt?.smtBullish || false, n-1),
+    smtBearish: new Array(n).fill(false).fill(smt?.smtBearish || false, n-1),
     swingHigh: swH, swingLow: swL,
     turtleSoupLong, turtleSoupShort,
   }
@@ -689,9 +744,23 @@ async function runCycle() {
   const walls = calcIVWalls(candles, currentPrice)
   if (walls) { try { await sbSet('bot_log', walls, 'iv_walls') } catch {} }
 
-  const ind = buildIndicators(candles)
+  const ind = buildIndicators(candles, smt)
   const li  = candles.length - 1
   console.log(`[INDICATORS] sweepLow:${ind.liquiditySweepLow[li]} | sweepHigh:${ind.liquiditySweepHigh[li]} | fvgBull:${ind.bullishFVG[li]} | fvgBear:${ind.bearishFVG[li]} | bosBull:${ind.bosBullish[li]} | bosBear:${ind.bosBearish[li]} | obBull:${ind.rejectionBlockBullish[li]} | obBear:${ind.rejectionBlockBearish[li]}`)
+
+  // Fetch MES bars for SMT detection
+  let barsMES = []
+  try {
+    const mesRes  = await fetch('https://tv-price-feed-production.up.railway.app/bars/mes')
+    const mesData = await mesRes.json()
+    barsMES = mesData.bars || []
+  } catch (e) { console.log('[SMT] MES fetch failed:', e.message) }
+
+  // SMT Divergence detection
+  const smt = detectSMT(candles, barsMES)
+  if (smt.smtBullish || smt.smtBearish) {
+    console.log(`[SMT] 🎯 Divergence! Bullish:${smt.smtBullish} Bearish:${smt.smtBearish}`)
+  }
 
   // HTF sweep detection
   const htfSweeps = bars1m && bars1m.length > 60

@@ -190,16 +190,14 @@ export function createBacktestEngine(config = {}) {
       }
     }
 
-// ── Score threshold check ─────────────────────────────────────
-    if (config.useScoreThreshold) {
-      const signalScoreVal = result.score || 4
-      const threshold      = config.biasThreshold || 5
-      if (signalScoreVal < threshold) {
-        return { type: 'blocked', barIndex: i, time: c.time, reason: `Score ${signalScoreVal} below threshold ${threshold}` }
+// ── Sweep direction conflict ───────────────────────────────────
+    if (config.useSweepDirectionFilter) {
+      const sweepHigh = indicators.liquiditySweepHigh?.[i] || indicators.liquiditySweepHigh?.[i-1]
+      if (sweepHigh) {
+        return { type: 'blocked', barIndex: i, time: c.time, reason: 'BLOCKED LONG — sweepHigh active (bearish)' }
       }
     }
 
-    
     // ── Dynamic risk: ATR-based stop + probability-adjusted target ─
     const dynamicRisk = calcDynamicRisk({
       candles:     candles.slice(0, i + 1),

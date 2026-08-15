@@ -797,7 +797,6 @@ async function runCycle() {
         console.log(`🛑 Stop loss hit! Price:${price} SL:${pos.stopLoss}`)
         await closeTrade(trades, price, 'stopLoss')
         await log('trade', `Stop loss hit @ ${price}`, `SL was ${pos.stopLoss}`)
-        await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
         return
       }
     }
@@ -808,7 +807,6 @@ async function runCycle() {
       console.log(`🎯 Take profit hit! Price:${price} TP:${pos.takeProfit}`)
       await closeTrade(trades, price, 'takeProfit')
       await log('trade', `Take profit hit @ ${price}`, `TP was ${pos.takeProfit}`)
-      await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
       return
       }
     }
@@ -822,19 +820,16 @@ async function runCycle() {
   if (barsOpen > 30 && currentR < 0.25) {
       await closeTrade(trades, currentPrice, 'Time exit: 30 bars no progress')
       await log('trade', `Time exit @ ${currentPrice}`, `${barsOpen} bars, ${currentR.toFixed(2)}R`)
-      await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
       return
     }
     if (barsOpen > 50 && recentHigh <= (openPos.entryPrice + stopDist * 0.5)) {
       await closeTrade(trades, currentPrice, 'Time exit: 50 bars stalling')
       await log('trade', `Time exit @ ${currentPrice}`, `${barsOpen} bars stalling`)
-      await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
       return
     }
     if (barsOpen > 75) {
       await closeTrade(trades, currentPrice, 'Time exit: 75 bars max')
       await log('trade', `Time exit @ ${currentPrice}`, `Max hold time reached`)
-      await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
       return
     }
 
@@ -849,25 +844,14 @@ async function runCycle() {
     : utcHour >= 23 || utcHour < 4  ? 'asian'
     : 'offhours'
 
-// Require fresh sweep AFTER the last trade closed
-  const sweepReset = await sbGet('bot_log', 'sweep_reset')
-  if (sweepReset?.requireNewSweep) {
-    const lastTrade   = trades.filter(t => t.exitTime).slice(-1)[0]
-    const exitTime    = lastTrade?.exitTime || 0
-    const lastBarTime = candles[candles.length - 1]?.time || 0
-    const prevBarTime = candles[candles.length - 2]?.time || 0
 
-    // Only count sweep as fresh if it happened AFTER the last trade exit
-    const freshSweep = (ind.liquiditySweepLow[candles.length - 1] && lastBarTime > exitTime) ||
-                       (ind.liquiditySweepLow[candles.length - 2] && prevBarTime > exitTime) ||
-                       (ind.liquiditySweepHigh[candles.length - 1] && lastBarTime > exitTime) ||
-                       (ind.liquiditySweepHigh[candles.length - 2] && prevBarTime > exitTime)
 
-    if (freshSweep) {
-      await sbSet('bot_log', { requireNewSweep: false, updatedAt: Date.now() }, 'sweep_reset')
-      console.log('[SWEEP] Fresh sweep after exit detected — re-entry now allowed')
-    } else {
-      await log('filter', '⛔ WAITING — need fresh sweep after last trade close')
+  // ── 15-minute cooldown after any trade close ────────────────────
+  const lastClosedTrade = trades.filter(t => t.exitTime).slice(-1)[0]
+  if (lastClosedTrade?.exitTime) {
+    const minutesSinceExit = Math.floor((Date.now() - lastClosedTrade.exitTime) / (60 * 1000))
+    if (minutesSinceExit < 15) {
+      await log('filter', `⛔ COOLDOWN — ${15 - minutesSinceExit} min remaining after last trade`)
       return
     }
   }
@@ -955,13 +939,7 @@ async function runCycle() {
       console.log(`[BIAS] Neutral override — HTF confirmation present`)
     }
 
-// Score threshold check — verify signal score meets bias threshold
-    const signalScore = signal.score || 4
-    const sessionThreshold = getSessionThreshold(bias.threshold)
-    if (signalScore < sessionThreshold) {
-      await log('filter', `⛔ BLOCKED — signal score ${signalScore} below threshold ${sessionThreshold}`)
-      return
-    }
+const signalScore = signal.score || 4
 
     // Learning filter
     const allowed = await canTrade(signal.factors || {})
@@ -1051,7 +1029,6 @@ async function fastCheck() {
         console.log(`🛑 SL HIT @ ${price}`)
         await closeTrade(trades, price, 'stopLoss')
         await log('trade', `Stop loss hit @ ${price}`, `SL was ${openPos.stopLoss}`)
-        await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
         return
       }
     }
@@ -1062,7 +1039,6 @@ if (tpHit) {
       console.log(`🎯 TP HIT @ ${price}`)
       await closeTrade(trades, price, 'takeProfit')
       await log('trade', `Take profit hit @ ${price}`, `TP was ${openPos.takeProfit}`)
-      await sbSet('bot_log', { requireNewSweep: true, updatedAt: Date.now() }, 'sweep_reset')
       return
       }
     }

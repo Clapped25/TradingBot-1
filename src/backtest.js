@@ -182,19 +182,11 @@ export function createBacktestEngine(config = {}) {
     }
 
 
-    // ── Sweep reset filter (test this) ────────────────────────────
-    if (config.useSweepFilter) {
-      const lastExit = trades.filter(t => t.type === 'exit').slice(-1)[0]
-      if (lastExit) {
-        const barsSinceExit = i - lastExit.barIndex
-        const freshSweep = indicators.liquiditySweepLow?.[i] || 
-                           indicators.liquiditySweepLow?.[i-1] ||
-                           indicators.liquiditySweepHigh?.[i] ||
-                           indicators.liquiditySweepHigh?.[i-1]
-        const sweepAfterExit = freshSweep && barsSinceExit > 0
-        if (!sweepAfterExit) {
-          return { type: 'blocked', barIndex: i, time: c.time, reason: 'Waiting for fresh sweep after last trade' }
-        }
+// ── Cooldown filter ───────────────────────────────────────────
+    if (config.cooldownBars > 0 && lastExitIdx > -Infinity) {
+      const barsSinceExit = i - lastExitIdx
+      if (barsSinceExit < config.cooldownBars) {
+        return { type: 'blocked', barIndex: i, time: c.time, reason: `Cooldown — ${config.cooldownBars - barsSinceExit} bars remaining` }
       }
     }
 

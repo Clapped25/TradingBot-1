@@ -190,7 +190,16 @@ export function createBacktestEngine(config = {}) {
       }
     }
 
+// ── Score threshold check ─────────────────────────────────────
+    if (config.useScoreThreshold) {
+      const signalScoreVal = result.score || 4
+      const threshold      = config.biasThreshold || 5
+      if (signalScoreVal < threshold) {
+        return { type: 'blocked', barIndex: i, time: c.time, reason: `Score ${signalScoreVal} below threshold ${threshold}` }
+      }
+    }
 
+    
     // ── Dynamic risk: ATR-based stop + probability-adjusted target ─
     const dynamicRisk = calcDynamicRisk({
       candles:     candles.slice(0, i + 1),

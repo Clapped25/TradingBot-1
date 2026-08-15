@@ -72,7 +72,7 @@ export default function StrategyReview({ strategy, onStrategyChange, onBack, onB
         throw new Error(`Signal function error: ${e.message}`)
       }
 
-      const riskConfig = { symbolKey: symbol, accountBalance, riskPct, rMultiple, useMicro, useLearning, useSweepFilter: true  }
+      const riskConfig = { symbolKey: symbol, accountBalance, riskPct, rMultiple, useMicro, useLearning  }
       const periodLabel = sorted.length === 1
         ? sorted[0].label
         : `${sorted[0].label} – ${sorted[sorted.length - 1].label} (${sorted.length} months)`

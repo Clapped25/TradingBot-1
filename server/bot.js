@@ -328,26 +328,30 @@ async function calcDynamicRisk(candles, side, currentPrice, factors, accountBala
 
 // ── Market structure detection ────────────────────────────────────
 function detectStructure(candles) {
-  if (candles.length < 10) return 'neutral'
+  if (candles.length < 15) return 'neutral'
   const swings = []
-  for (let i = 3; i < candles.length - 3; i++) {
+  for (let i = 4; i < candles.length - 4; i++) {
     const isH = candles[i].high > candles[i-1].high && candles[i].high > candles[i-2].high &&
-                candles[i].high > candles[i-3].high && candles[i].high > candles[i+1].high &&
-                candles[i].high > candles[i+2].high && candles[i].high > candles[i+3].high
+                candles[i].high > candles[i-3].high && candles[i].high > candles[i-4].high &&
+                candles[i].high > candles[i+1].high && candles[i].high > candles[i+2].high &&
+                candles[i].high > candles[i+3].high && candles[i].high > candles[i+4].high
     const isL = candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low &&
-                candles[i].low < candles[i-3].low && candles[i].low < candles[i+1].low &&
-                candles[i].low < candles[i+2].low && candles[i].low < candles[i+3].low
-    if (isH) swings.push({ type: 'high', price: candles[i].high })
-    if (isL) swings.push({ type: 'low',  price: candles[i].low })
+                candles[i].low < candles[i-3].low && candles[i].low < candles[i-4].low &&
+                candles[i].low < candles[i+1].low && candles[i].low < candles[i+2].low &&
+                candles[i].low < candles[i+3].low && candles[i].low < candles[i+4].low
+    if (isH) swings.push({ type: 'high', price: candles[i].high, idx: i })
+    if (isL) swings.push({ type: 'low',  price: candles[i].low,  idx: i })
   }
-  if (swings.length < 4) return 'neutral'
-  const highs = swings.filter(s => s.type === 'high').slice(-2)
-  const lows  = swings.filter(s => s.type === 'low').slice(-2)
-  if (highs.length < 2 || lows.length < 2) return 'neutral'
-  const hhhl = highs[1].price > highs[0].price && lows[1].price > lows[0].price
-  const lhll = highs[1].price < highs[0].price && lows[1].price < lows[0].price
-  if (hhhl) return 'bullish'
-  if (lhll) return 'bearish'
+  if (swings.length < 6) return 'neutral'
+  const highs = swings.filter(s => s.type === 'high').slice(-3)
+  const lows  = swings.filter(s => s.type === 'low').slice(-3)
+  if (highs.length < 3 || lows.length < 3) return 'neutral'
+  const hhh  = highs[2].price > highs[1].price && highs[1].price > highs[0].price
+  const hlhl = lows[2].price > lows[1].price && lows[1].price > lows[0].price
+  const lll  = highs[2].price < highs[1].price && highs[1].price < highs[0].price
+  const lhlh = lows[2].price < lows[1].price && lows[1].price < lows[0].price
+  if (hhh && hlhl) return 'bullish'
+  if (lll && lhlh) return 'bearish'
   return 'neutral'
 }
 
@@ -365,6 +369,43 @@ async function updateBias(candles) {
   } else {
     direction = 'both';  threshold = 5; reason = `Unclear (1H:${bias1H} 4H:${bias4H}) → both, threshold 5`
   }
+
+  // ── Bias Lock — holds direction until structure clearly breaks ──
+  try {
+    const prev   = await sbGet('bot_log', 'bias')
+    const lockMs = 15 * 60 * 1000  // minimum 15-min hold
+
+    if (prev?.direction && prev.direction !== 'both') {
+      const lockAge      = Date.now() - (prev.lockedSince || prev.updatedAt || 0)
+      const dirChanged   = direction !== prev.direction
+      const lockExpired  = lockAge >= lockMs
+
+      if (dirChanged && !lockExpired) {
+        // Lock hasn't expired — keep old bias
+        console.log(`[BIAS] 🔒 Lock active (${Math.round(lockAge/60000)}/${Math.round(lockMs/60000)} min) — keeping ${prev.direction}, ignoring ${direction}`)
+        direction = prev.direction
+        threshold = prev.threshold
+        reason    = prev.reason + \` (locked ${Math.round((lockMs-lockAge)/60000)}min)\`
+
+      } else if (dirChanged && lockExpired) {
+        // Lock expired — but require BOTH 1H and 4H to agree on new direction
+        // before actually flipping. If only one timeframe changed, stay neutral
+        const clearBreak = (bias1H !== 'neutral' && bias4H !== 'neutral' && bias1H === bias4H)
+        if (!clearBreak) {
+          console.log(`[BIAS] Lock expired but structure unclear (1H:${bias1H} 4H:${bias4H}) — holding neutral`)
+          direction = 'both'
+          threshold = 5
+          reason    = \`Unclear after lock (1H:${bias1H} 4H:${bias4H}) → both, threshold 5\`
+        } else {
+          console.log(`[BIAS] ✅ Direction confirmed changed: ${prev.direction} → ${direction} (both TFs agree after ${Math.round(lockAge/60000)} min)`)
+        }
+
+      } else if (!dirChanged) {
+        // Same direction — extend the lock naturally
+        console.log(`[BIAS] ✅ Bias confirmed: ${direction} (holding for ${Math.round(lockAge/60000)} min)`)
+      }
+    }
+  } catch {}
   const bias = { bias1H, bias4H, direction, threshold, reason, updatedAt: Date.now() }
   console.log(`[BIAS] ${reason}`)
   try { await sbSet('bot_log', bias, 'bias') } catch {}
@@ -903,13 +944,25 @@ async function runCycle() {
       }
     }
 
-    // IV Wall filter
+    // IV Wall filter — only apply when key levels are available
     if (walls) {
-      if (isBuy && walls.wallBias === 'nearUpper') {
-        await log('filter', `⛔ BLOCKED LONG — near ${walls.nearestResistance?.label}@${walls.nearestResistance?.price} (${walls.distToResistance}pts)`); return
-      }
-      if (isSell && walls.wallBias === 'nearLower') {
-        await log('filter', `⛔ BLOCKED SHORT — near ${walls.nearestSupport?.label}@${walls.nearestSupport?.price} (${walls.distToSupport}pts)`); return
+      const hasPDH = walls.nearestResistance?.price && !isNaN(walls.nearestResistance.price)
+      const hasPDL = walls.nearestSupport?.price && !isNaN(walls.nearestSupport.price)
+      if (!hasPDH && !hasPDL) {
+        console.log('[WALLS] PDH/PDL not yet available — skipping IV walls filter')
+      } else {
+        if (isBuy && walls.wallBias === 'nearUpper' && hasPDH) {
+          const lbl = walls.nearestResistance?.label || 'resistance'
+          const prc = walls.nearestResistance?.price || '?'
+          const dst = walls.distToResistance || 0
+          await log('filter', `⛔ BLOCKED LONG — near ${lbl}@${prc} (${dst}pts)`); return
+        }
+        if (isSell && walls.wallBias === 'nearLower' && hasPDL) {
+          const lbl = walls.nearestSupport?.label || 'support'
+          const prc = walls.nearestSupport?.price || '?'
+          const dst = walls.distToSupport || 0
+          await log('filter', `⛔ BLOCKED SHORT — near ${lbl}@${prc} (${dst}pts)`); return
+        }
       }
     }
 

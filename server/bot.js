@@ -373,36 +373,24 @@ async function updateBias(candles) {
   // ── Bias Lock — holds direction until structure clearly breaks ──
   try {
     const prev   = await sbGet('bot_log', 'bias')
-    const lockMs = 15 * 60 * 1000  // minimum 15-min hold
-
+    const lockMs = 15 * 60 * 1000
     if (prev?.direction && prev.direction !== 'both') {
-      const lockAge      = Date.now() - (prev.lockedSince || prev.updatedAt || 0)
-      const dirChanged   = direction !== prev.direction
-      const lockExpired  = lockAge >= lockMs
-
+      const lockAge    = Date.now() - (prev.lockedSince || prev.updatedAt || 0)
+      const dirChanged = direction !== prev.direction
+      const lockExpired = lockAge >= lockMs
       if (dirChanged && !lockExpired) {
-        // Lock hasn't expired — keep old bias
-        console.log(`[BIAS] 🔒 Lock active (${Math.round(lockAge/60000)}/${Math.round(lockMs/60000)} min) — keeping ${prev.direction}, ignoring ${direction}`)
-        direction = prev.direction
-        threshold = prev.threshold
-        reason    = prev.reason + \` (locked ${Math.round((lockMs-lockAge)/60000)}min)\`
-
+        console.log(`[BIAS] Lock active (${Math.round(lockAge/60000)}/${Math.round(lockMs/60000)} min) — keeping ${prev.direction}`)
+        direction = prev.direction; threshold = prev.threshold; reason = prev.reason + ` (locked ${Math.round((lockMs-lockAge)/60000)}min)`
       } else if (dirChanged && lockExpired) {
-        // Lock expired — but require BOTH 1H and 4H to agree on new direction
-        // before actually flipping. If only one timeframe changed, stay neutral
         const clearBreak = (bias1H !== 'neutral' && bias4H !== 'neutral' && bias1H === bias4H)
         if (!clearBreak) {
-          console.log(`[BIAS] Lock expired but structure unclear (1H:${bias1H} 4H:${bias4H}) — holding neutral`)
-          direction = 'both'
-          threshold = 5
-          reason    = \`Unclear after lock (1H:${bias1H} 4H:${bias4H}) → both, threshold 5\`
+          console.log(`[BIAS] Lock expired but unclear (1H:${bias1H} 4H:${bias4H}) — holding neutral`)
+          direction = 'both'; threshold = 5; reason = `Unclear after lock → both, threshold 5`
         } else {
-          console.log(`[BIAS] ✅ Direction confirmed changed: ${prev.direction} → ${direction} (both TFs agree after ${Math.round(lockAge/60000)} min)`)
+          console.log(`[BIAS] Direction confirmed: ${prev.direction} → ${direction} (both TFs agree)`)
         }
-
-      } else if (!dirChanged) {
-        // Same direction — extend the lock naturally
-        console.log(`[BIAS] ✅ Bias confirmed: ${direction} (holding for ${Math.round(lockAge/60000)} min)`)
+      } else {
+        console.log(`[BIAS] Confirmed: ${direction} (${Math.round(lockAge/60000)} min)`)
       }
     }
   } catch {}
@@ -895,6 +883,13 @@ async function runCycle() {
       await log('filter', `⛔ COOLDOWN — ${15 - minutesSinceExit} min remaining after last trade`)
       return
     }
+  }
+
+  // Block trades near market close (4:55-5:00 PM EST = 20:55-21:00 UTC)
+  const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes()
+  if (utcMinutes >= 1255 && utcMinutes < 1260) {
+    await log('filter', '⛔ BLOCKED — market closes in < 5 min (4:55-5:00 PM EST)')
+    return
   }
 
   const signal = evalSignal(candles, ind, strategy.signalBody, openPos, sessionName, htfSweeps)

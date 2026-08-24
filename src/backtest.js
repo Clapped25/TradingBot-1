@@ -261,7 +261,8 @@ export function createBacktestEngine(config = {}) {
     }
     if (isBuy  && biasResult.direction === 'short') return null
     if (isSell && biasResult.direction === 'long')  return null
-
+// DEBUG — remove after testing
+    if (isSell) console.log(`[SELL SIGNAL at bar ${i}] bias:${biasResult.direction} session:${getSession(c.time)} score:${result.score || 4} threshold:${threshold}`)
     // ── Session threshold ─────────────────────────────────────────
     const session   = getSession(c.time)
     const threshold = getSessionThreshold(biasResult.threshold, session)

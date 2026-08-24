@@ -248,8 +248,8 @@ export function createBacktestEngine(config = {}) {
     let result
     try { result = signalFn(i, candles, indicators, { isOpen: false, side: 'FLAT' }) } catch { result = { action: 'none' } }
     const isBuy  = result.action === 'buy'  || result.action === 'LONG'
-    const isSell = result.action === 'sell' || result.action === 'SHORT'
-    if (!isBuy && !isSell) return null
+    const isSell = false  // longs only mode
+    if (!isBuy) return null
 
     // ── Bias filter with lock ─────────────────────────────────────
     const biasResult = calcBias(candles, i, currentBias, biasLockedAt)

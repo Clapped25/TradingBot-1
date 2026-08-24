@@ -270,9 +270,7 @@ export function createBacktestEngine(config = {}) {
     if (score < threshold) return null
 
     // ── Sweep direction conflict ──────────────────────────────────
-    if (isBuy  && (indicators.liquiditySweepHigh?.[i] || indicators.liquiditySweepHigh?.[i-1])) return null
-    if (isSell && (indicators.liquiditySweepLow?.[i]  || indicators.liquiditySweepLow?.[i-1]))  return null
-
+    
     // ── Sweep direction conflict ──────────────────────────────────────
     if (isBuy  && (indicators.liquiditySweepHigh?.[i] || indicators.liquiditySweepHigh?.[i-1])) return null
     if (isSell && (indicators.liquiditySweepLow?.[i]  || indicators.liquiditySweepLow?.[i-1]))  return null

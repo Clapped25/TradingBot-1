@@ -235,7 +235,8 @@ export function createBacktestEngine(config = {}) {
 
       // Exit signal
       let result
-      try { result = signalFn(i, candles, indicators, pos) } catch { result = { action: 'none' } }
+      try { result = signalFn(i, candles, indicators, { isOpen: true, side: pos === 'long' ? 'LONG' : 'SHORT' }) } catch { result = { action: 'none' } }
+
       if (result.action === 'exit' || result.action === 'EXIT')
         return closeTrade(i, candles, c.close, result.reason || 'Exit signal')
       return null
@@ -249,7 +250,8 @@ export function createBacktestEngine(config = {}) {
 
     // Get signal
     let result
-    try { result = signalFn(i, candles, indicators, null) } catch { result = { action: 'none' } }
+    try { result = signalFn(i, candles, indicators, { isOpen: false, side: 'FLAT' }) } catch { result = { action: 'none' } }
+
     const isBuy  = result.action === 'buy'  || result.action === 'LONG'
     const isSell = result.action === 'sell' || result.action === 'SHORT'
     if (!isBuy && !isSell) return null

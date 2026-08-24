@@ -248,6 +248,7 @@ export function createBacktestEngine(config = {}) {
     let result
     try { result = signalFn(i, candles, indicators, { isOpen: false, side: 'FLAT' }) } catch { result = { action: 'none' } }
 
+
     const isBuy  = result.action === 'buy'  || result.action === 'LONG'
     const isSell = result.action === 'sell' || result.action === 'SHORT'
     if (!isBuy && !isSell) return null

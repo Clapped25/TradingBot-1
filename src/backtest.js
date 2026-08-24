@@ -72,6 +72,12 @@ function getSessionThreshold(baseThreshold, session) {
   return baseThreshold
 }
 
+    // ── Sweep direction conflict ──────────────────────────────────
+    if (isBuy  && (indicators.liquiditySweepHigh?.[i] || indicators.liquiditySweepHigh?.[i-1])) return null
+    if (isSell && (indicators.liquiditySweepLow?.[i]  || indicators.liquiditySweepLow?.[i-1]))  return null
+
+
+
 // ── IV walls (simplified) ─────────────────────────────────────────
 function calcIVWalls(candles, i, currentPrice) {
   const todayStart = new Date(candles[i].time)

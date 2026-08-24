@@ -72,7 +72,11 @@ function getSessionThreshold(baseThreshold, session) {
   return baseThreshold
 }
 
-   
+    // ── Sweep direction conflict ──────────────────────────────────
+    if (isBuy  && (indicators.liquiditySweepHigh?.[i] || indicators.liquiditySweepHigh?.[i-1])) return null
+    if (isSell && (indicators.liquiditySweepLow?.[i]  || indicators.liquiditySweepLow?.[i-1]))  return null
+
+
 
 // ── IV walls (simplified) ─────────────────────────────────────────
 function calcIVWalls(candles, i, currentPrice) {
@@ -231,8 +235,7 @@ export function createBacktestEngine(config = {}) {
 
       // Exit signal
       let result
-      try { result = signalFn(i, candles, indicators, { isOpen: true, side: pos === 'long' ? 'LONG' : 'SHORT' }) } catch { result = { action: 'none' } }
-
+      try { result = signalFn(i, candles, indicators, pos) } catch { result = { action: 'none' } }
       if (result.action === 'exit' || result.action === 'EXIT')
         return closeTrade(i, candles, c.close, result.reason || 'Exit signal')
       return null
@@ -247,8 +250,6 @@ export function createBacktestEngine(config = {}) {
     // Get signal
     let result
     try { result = signalFn(i, candles, indicators, { isOpen: false, side: 'FLAT' }) } catch { result = { action: 'none' } }
-
-
     const isBuy  = result.action === 'buy'  || result.action === 'LONG'
     const isSell = result.action === 'sell' || result.action === 'SHORT'
     if (!isBuy && !isSell) return null
@@ -261,17 +262,14 @@ export function createBacktestEngine(config = {}) {
     }
     if (isBuy  && biasResult.direction === 'short') return null
     if (isSell && biasResult.direction === 'long')  return null
-// DEBUG — remove after testing
-    if (isSell) console.log(`[SELL SIGNAL at bar ${i}] bias:${biasResult.direction} session:${getSession(c.time)} score:${result.score || 4} threshold:${threshold}`)
+
     // ── Session threshold ─────────────────────────────────────────
     const session   = getSession(c.time)
     const threshold = getSessionThreshold(biasResult.threshold, session)
     const score     = result.score || 4
     if (score < threshold) return null
 
-    // ── Sweep direction conflict ──────────────────────────────────
-    
-    // ── Sweep direction conflict ──────────────────────────────────────
+    // ── Sweep direction conflict ───────────────────────────────────────────────────────────────────────
     if (isBuy  && (indicators.liquiditySweepHigh?.[i] || indicators.liquiditySweepHigh?.[i-1])) return null
     if (isSell && (indicators.liquiditySweepLow?.[i]  || indicators.liquiditySweepLow?.[i-1]))  return null
 

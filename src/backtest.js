@@ -91,7 +91,6 @@ function getSessionThreshold(baseThreshold, session) {
   
 
 
-// ── IV walls (simplified) ─────────────────────────────────────────
 function calcIVWalls(candles, i, currentPrice) {
   const todayStart = new Date(candles[i].time)
   todayStart.setUTCHours(0, 0, 0, 0)
@@ -127,6 +126,7 @@ function calcIVWalls(candles, i, currentPrice) {
     hasPDL: pdl !== null,
   }
 }
+
 
 // ── Market close check ────────────────────────────────────────────
 function isMarketClose(timeMs) {

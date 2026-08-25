@@ -285,7 +285,7 @@ export function createBacktestEngine(config = {}) {
     const walls = calcIVWalls(candles, i, c.close, dailyLevelsCache)
 
       if (walls.hasPDH && walls.hasPDL) {
-      const atr = calcATR(candles.slice(0, i + 1))
+      const atr = calcATR(candles.slice(Math.max(0, i - 20), i + 1))
       if (isBuy  && walls.nearResistance && (walls.nearResistance - c.close) < atr * 1.5) return null
       if (isSell && walls.nearSupport    && (c.close - walls.nearSupport)    < atr * 1.5) return null
     }
@@ -327,7 +327,7 @@ export function createBacktestEngine(config = {}) {
     if (isSell && (stopPrice == null || stopPrice <= entryPrice)) return null
 
     const dynamicRisk = calcDynamicRisk({
-      candles:     candles.slice(0, i + 1),
+      candles:     candles.slice(Math.max(0, i - 50), i + 1),
       side,
       entryPrice,
       symbol:      useMicro ? (symbolKey === 'ES' ? 'MES' : 'MNQ') : symbolKey,

@@ -356,9 +356,29 @@ function detectStructure(candles) {
 }
 
 // ── HTF Bias ──────────────────────────────────────────────────────
-async function updateBias(candles) {
-  const bias1H = detectStructure(candles.slice(-100))
-  const bias4H = detectStructure(candles)
+async function updateBias(candles, bars1m = []) {
+  // Use proper 1H/4H candles if 1-min bars available, else fall back to 5-min proxy
+  let bars1H, bars4H
+  if (bars1m.length > 60) {
+    const oneHourMs  = 60 * 60 * 1000
+    const fourHourMs = 4 * 60 * 60 * 1000
+    const grouped1H  = {}, grouped4H = {}
+    for (const bar of bars1m.slice(-2880)) {  // last 2 days of 1-min bars
+      const b1 = Math.floor(bar.time / oneHourMs) * oneHourMs
+      if (!grouped1H[b1]) grouped1H[b1] = { time: b1, open: bar.open, high: bar.high, low: bar.low, close: bar.close }
+      else { grouped1H[b1].high = Math.max(grouped1H[b1].high, bar.high); grouped1H[b1].low = Math.min(grouped1H[b1].low, bar.low); grouped1H[b1].close = bar.close }
+      const b4 = Math.floor(bar.time / fourHourMs) * fourHourMs
+      if (!grouped4H[b4]) grouped4H[b4] = { time: b4, open: bar.open, high: bar.high, low: bar.low, close: bar.close }
+      else { grouped4H[b4].high = Math.max(grouped4H[b4].high, bar.high); grouped4H[b4].low = Math.min(grouped4H[b4].low, bar.low); grouped4H[b4].close = bar.close }
+    }
+    bars1H = Object.values(grouped1H).sort((a,b) => a.time - b.time)
+    bars4H = Object.values(grouped4H).sort((a,b) => a.time - b.time)
+  } else {
+    bars1H = candles.slice(-20)
+    bars4H = candles
+  }
+  const bias1H = detectStructure(bars1H)
+  const bias4H = detectStructure(bars4H)
   let direction = 'both', threshold = 5, reason = ''
   if (bias1H === 'bullish' && bias4H === 'bullish') {
     direction = 'long';  threshold = 4; reason = '1H+4H bullish → LONG only, threshold 4'
@@ -767,7 +787,7 @@ async function runCycle() {
   }
 
   let bias = await getBias()
-  if (!bias || (now.getUTCMinutes() < 6)) bias = await updateBias(candles)
+  if (!bias || (now.getUTCMinutes() < 6)) bias = await updateBias(candles, bars1m)
   console.log(`[BIAS] 1H:${bias.bias1H} 4H:${bias.bias4H} → ${bias.direction.toUpperCase()} threshold:${bias.threshold}`)
 
   const walls = calcIVWalls(candles, currentPrice)
@@ -915,7 +935,11 @@ async function runCycle() {
   }
 
   const isBuy  = signal.action === 'buy'  || signal.action === 'LONG'
-  const isSell = signal.action === 'sell' || signal.action === 'SHORT'
+  const isSell = false  // LONGS ONLY MODE
+  if (signal.action === 'sell' || signal.action === 'SHORT') {
+    await log('filter', '⛔ LONGS ONLY — short signal blocked')
+    return
+  }
 
   if ((isBuy || isSell) && !openPos) {
     // Eval mode risk check
@@ -946,17 +970,22 @@ async function runCycle() {
       if (!hasPDH && !hasPDL) {
         console.log('[WALLS] PDH/PDL not yet available — skipping IV walls filter')
       } else {
+        const atrW = calcATR(candles)
         if (isBuy && walls.wallBias === 'nearUpper' && hasPDH) {
-          const lbl = walls.nearestResistance?.label || 'resistance'
-          const prc = walls.nearestResistance?.price || '?'
           const dst = walls.distToResistance || 0
-          await log('filter', `⛔ BLOCKED LONG — near ${lbl}@${prc} (${dst}pts)`); return
+          if (dst < atrW * 1.5) {
+            const lbl = walls.nearestResistance?.label || 'resistance'
+            const prc = walls.nearestResistance?.price || '?'
+            await log('filter', `⛔ BLOCKED LONG — near ${lbl}@${prc} (${dst}pts < ${(atrW*1.5).toFixed(0)}pts ATR)`); return
+          }
         }
         if (isSell && walls.wallBias === 'nearLower' && hasPDL) {
-          const lbl = walls.nearestSupport?.label || 'support'
-          const prc = walls.nearestSupport?.price || '?'
           const dst = walls.distToSupport || 0
-          await log('filter', `⛔ BLOCKED SHORT — near ${lbl}@${prc} (${dst}pts)`); return
+          if (dst < atrW * 1.5) {
+            const lbl = walls.nearestSupport?.label || 'support'
+            const prc = walls.nearestSupport?.price || '?'
+            await log('filter', `⛔ BLOCKED SHORT — near ${lbl}@${prc} (${dst}pts < ${(atrW*1.5).toFixed(0)}pts ATR)`); return
+          }
         }
       }
     }

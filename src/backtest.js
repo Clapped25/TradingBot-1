@@ -35,7 +35,8 @@ function detectStructure(candles) {
 // ── Bias with lock (matches server/bot.js) ────────────────────────
 function calcBias(candles, i, prevBias, prevBiasBarIdx) {
   // Group 5-min candles into proper 1H and 4H timeframes
-  const slice      = candles.slice(0, i + 1)
+  // Only use last 500 bars for performance (covers ~40 hours of 1H/4H data)
+  const slice      = candles.slice(Math.max(0, i - 500), i + 1)
   const oneHourMs  = 60 * 60 * 1000
   const fourHourMs = 4 * 60 * 60 * 1000
   const grouped1H  = {}, grouped4H = {}
@@ -267,7 +268,10 @@ export function createBacktestEngine(config = {}) {
     if (!isBuy) return null
 
     // ── Bias filter with lock ─────────────────────────────────────
-    const biasResult = calcBias(candles, i, currentBias, biasLockedAt)
+    // Recalculate bias every 12 bars (1 hour) for performance
+    const biasResult = (i % 12 === 0 || i === 10)
+      ? calcBias(candles, i, currentBias, biasLockedAt)
+      : { direction: currentBias, threshold: currentBias === 'long' ? 4 : currentBias === 'short' ? 4 : 5, bias1H: 'neutral', bias4H: 'neutral' }
     if (biasResult.direction !== currentBias) {
       currentBias  = biasResult.direction
       biasLockedAt = i

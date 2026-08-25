@@ -275,6 +275,8 @@ export function createBacktestEngine(config = {}) {
     if (isSell && biasResult.direction === 'long')  return null
 
     const session = getSession(c.time)  // keep for stats tracking
+    const score   = result.score || 4
+
 
     // ── Sweep direction conflict ───────────────────────────────────────────────────────────────────────
     if (isBuy  && (indicators.liquiditySweepHigh?.[i] || indicators.liquiditySweepHigh?.[i-1])) return null

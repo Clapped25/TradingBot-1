@@ -16,8 +16,9 @@ function detectStructure(candles) {
                 candles[i].low < candles[i-3].low && candles[i].low < candles[i-4].low &&
                 candles[i].low < candles[i+1].low && candles[i].low < candles[i+2].low &&
                 candles[i].low < candles[i+3].low && candles[i].low < candles[i+4].low
-    if (isH) swings.push({ type: 'high', price: candles[i].high })
-    if (isL) swings.push({ type: 'low',  price: candles[i].low  })
+    if (isH) swings.push({ type: 'high', price: candles[i].high, idx: i })
+    if (isL) swings.push({ type: 'low',  price: candles[i].low,  idx: i })
+
   }
   if (swings.length < 6) return 'neutral'
   const highs = swings.filter(s => s.type === 'high').slice(-3)

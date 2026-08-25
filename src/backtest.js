@@ -91,41 +91,35 @@ function getSessionThreshold(baseThreshold, session) {
   
 
 
-function calcIVWalls(candles, i, currentPrice) {
+function buildDailyLevels(candles) {
+  const days = {}
+  for (const bar of candles) {
+    const d = new Date(bar.time)
+    d.setUTCHours(0, 0, 0, 0)
+    const key = d.getTime()
+    if (!days[key]) days[key] = { open: bar.open, high: bar.high, low: bar.low, close: bar.close }
+    else { days[key].high = Math.max(days[key].high, bar.high); days[key].low = Math.min(days[key].low, bar.low); days[key].close = bar.close }
+  }
+  return days
+}
+
+function calcIVWalls(candles, i, currentPrice, dailyLevels) {
   const todayStart = new Date(candles[i].time)
   todayStart.setUTCHours(0, 0, 0, 0)
-  const todayMs = todayStart.getTime()
-
-  let todayOpen = null, pdh = null, pdl = null
-  let yestHigh = -Infinity, yestLow = Infinity
-  const yestStart = todayMs - 24*60*60*1000
-  const yestEnd   = todayMs
-
-  for (let j = 0; j <= i; j++) {
-    const b = candles[j]
-    if (b.time >= todayMs && todayOpen === null) todayOpen = b.open
-    if (b.time >= yestStart && b.time < yestEnd) {
-      yestHigh = Math.max(yestHigh, b.high)
-      yestLow  = Math.min(yestLow,  b.low)
-    }
-  }
-  if (yestHigh > -Infinity) pdh = yestHigh
-  if (yestLow  < Infinity)  pdl = yestLow
-
+  const todayMs   = todayStart.getTime()
+  const yestMs    = todayMs - 24*60*60*1000
+  const today     = dailyLevels[todayMs]
+  const yesterday = dailyLevels[yestMs]
+  const todayOpen = today?.open || null
+  const pdh       = yesterday?.high || null
+  const pdl       = yesterday?.low  || null
   const resistanceLevels = [pdh, todayOpen].filter(Boolean)
   const supportLevels    = [pdl, todayOpen].filter(Boolean)
-
   const nearResistance = resistanceLevels.find(l => l > currentPrice && l - currentPrice < 30)
   const nearSupport    = supportLevels.find(l => l < currentPrice && currentPrice - l < 30)
-
-  return {
-    nearResistance,
-    nearSupport,
-    pdh, pdl, todayOpen,
-    hasPDH: pdh !== null,
-    hasPDL: pdl !== null,
-  }
+  return { nearResistance, nearSupport, pdh, pdl, todayOpen, hasPDH: pdh !== null, hasPDL: pdl !== null }
 }
+
 
 
 // ── Market close check ────────────────────────────────────────────
@@ -176,6 +170,7 @@ export function createBacktestEngine(config = {}) {
   let currentBias  = 'both'
   let biasLockedAt = 0
   const trades     = []
+  let dailyLevelsCache = null
 
   function closeTrade(i, candles, exitPrice, reason) {
     const entry     = trades[trades.length - 1]
@@ -286,8 +281,10 @@ export function createBacktestEngine(config = {}) {
     if (isSell && (indicators.liquiditySweepLow?.[i]  || indicators.liquiditySweepLow?.[i-1]))  return null
 
     // ── IV walls filter ───────────────────────────────────────────
-    const walls = calcIVWalls(candles, i, c.close)
-    if (walls.hasPDH && walls.hasPDL) {
+        if (!dailyLevelsCache) dailyLevelsCache = buildDailyLevels(candles)
+    const walls = calcIVWalls(candles, i, c.close, dailyLevelsCache)
+
+      if (walls.hasPDH && walls.hasPDL) {
       const atr = calcATR(candles.slice(0, i + 1))
       if (isBuy  && walls.nearResistance && (walls.nearResistance - c.close) < atr * 1.5) return null
       if (isSell && walls.nearSupport    && (c.close - walls.nearSupport)    < atr * 1.5) return null

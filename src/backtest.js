@@ -34,8 +34,23 @@ function detectStructure(candles) {
 
 // ── Bias with lock (matches server/bot.js) ────────────────────────
 function calcBias(candles, i, prevBias, prevBiasBarIdx) {
-  const bias1H = detectStructure(candles.slice(Math.max(0, i - 100), i + 1))
-  const bias4H = detectStructure(candles.slice(0, i + 1))
+  // Group 5-min candles into proper 1H and 4H timeframes
+  const slice      = candles.slice(0, i + 1)
+  const oneHourMs  = 60 * 60 * 1000
+  const fourHourMs = 4 * 60 * 60 * 1000
+  const grouped1H  = {}, grouped4H = {}
+  for (const bar of slice) {
+    const b1 = Math.floor(bar.time / oneHourMs) * oneHourMs
+    if (!grouped1H[b1]) grouped1H[b1] = { time: b1, open: bar.open, high: bar.high, low: bar.low, close: bar.close }
+    else { grouped1H[b1].high = Math.max(grouped1H[b1].high, bar.high); grouped1H[b1].low = Math.min(grouped1H[b1].low, bar.low); grouped1H[b1].close = bar.close }
+    const b4 = Math.floor(bar.time / fourHourMs) * fourHourMs
+    if (!grouped4H[b4]) grouped4H[b4] = { time: b4, open: bar.open, high: bar.high, low: bar.low, close: bar.close }
+    else { grouped4H[b4].high = Math.max(grouped4H[b4].high, bar.high); grouped4H[b4].low = Math.min(grouped4H[b4].low, bar.low); grouped4H[b4].close = bar.close }
+  }
+  const bars1H = Object.values(grouped1H).sort((a,b) => a.time - b.time)
+  const bars4H = Object.values(grouped4H).sort((a,b) => a.time - b.time)
+  const bias1H = detectStructure(bars1H)
+  const bias4H = detectStructure(bars4H)
   let direction = 'both', threshold = 5
   if      (bias1H === 'bullish' && bias4H === 'bullish') { direction = 'long';  threshold = 4 }
   else if (bias1H === 'bearish' && bias4H === 'bearish') { direction = 'short'; threshold = 4 }
@@ -260,11 +275,7 @@ export function createBacktestEngine(config = {}) {
     if (isBuy  && biasResult.direction === 'short') return null
     if (isSell && biasResult.direction === 'long')  return null
 
-    // ── Session threshold ─────────────────────────────────────────
-    const session   = getSession(c.time)
-    const threshold = getSessionThreshold(biasResult.threshold, session)
-    const score     = result.score || 4
-    if (score < threshold) return null
+    const session = getSession(c.time)  // keep for stats tracking
 
     // ── Sweep direction conflict ───────────────────────────────────────────────────────────────────────
     if (isBuy  && (indicators.liquiditySweepHigh?.[i] || indicators.liquiditySweepHigh?.[i-1])) return null
@@ -273,8 +284,9 @@ export function createBacktestEngine(config = {}) {
     // ── IV walls filter ───────────────────────────────────────────
     const walls = calcIVWalls(candles, i, c.close)
     if (walls.hasPDH && walls.hasPDL) {
-      if (isBuy  && walls.nearResistance) return null
-      if (isSell && walls.nearSupport)    return null
+      const atr = calcATR(candles.slice(0, i + 1))
+      if (isBuy  && walls.nearResistance && (walls.nearResistance - c.close) < atr * 1.5) return null
+      if (isSell && walls.nearSupport    && (c.close - walls.nearSupport)    < atr * 1.5) return null
     }
 
     // ── Learning filter ───────────────────────────────────────────
@@ -334,7 +346,13 @@ export function createBacktestEngine(config = {}) {
       ? entryPrice + (entryPrice - stopPrice) * rMultiple
       : entryPrice - (stopPrice - entryPrice) * rMultiple
 
-    if (contracts < 1) return null
+    // $500 hard cap — never risk more than $500 per trade
+    const maxLossDollars = 500
+    const stopDistPts    = Math.abs(entryPrice - stopPrice)
+    const maxContracts   = stopDistPts > 0 ? Math.floor(maxLossDollars / (stopDistPts * spec.pointValue)) : 1
+    const cappedContracts = Math.min(contracts, Math.max(1, maxContracts))
+
+    if (cappedContracts < 1) return null
 
     pos      = isBuy ? 'long' : 'short'
     entryIdx = i
@@ -345,7 +363,7 @@ export function createBacktestEngine(config = {}) {
       type: 'entry', barIndex: i, price: entryPrice, time: c.time,
       reason: result.reason || 'Entry signal triggered',
       factors: result.factors || {}, regime: detectRegime(candles, i),
-      side, stopPrice, takeProfitPrice, contracts, riskDollars,
+      side, stopPrice, takeProfitPrice, contracts: cappedContracts, riskDollars: Math.min(riskDollars, maxLossDollars),
       balanceAtEntry: balance, atr,
       rrRatio: dynamicRisk.rrRatio, winRate: dynamicRisk.winRate,
       riskMultiplier: dynamicRisk.riskMultiplier, riskPct: dynamicRisk.riskPct,

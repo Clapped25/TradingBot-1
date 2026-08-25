@@ -429,15 +429,9 @@ async function getBias() {
 
 // ── Session threshold ─────────────────────────────────────────────
 function getSessionThreshold(baseThreshold) {
-  const h = new Date().getUTCHours()
-  const active = (h >= 13 && h < 21) || (h >= 7 && h < 12) || (h >= 23 || h < 4)
-  if (!active) {
-    const raised = Math.max(baseThreshold, 6)
-    if (raised > baseThreshold) console.log(`[SESSION] Offhours — threshold raised to ${raised}`)
-    return raised
-  }
-  return baseThreshold
+  return baseThreshold  // matches backtest — no session adjustment
 }
+
 
 // ── IV Walls ──────────────────────────────────────────────────────
 function calcIVWalls(candles, currentPrice) {

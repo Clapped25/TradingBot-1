@@ -1091,26 +1091,31 @@ async function fastCheck() {
     const bars = data.bars || []
     if (bars.length === 0) return
 
-    const price = bars[bars.length - 1].close
-    console.log(`[FAST] Price:${price} | ${openPos.side} SL:${openPos.stopLoss} TP:${openPos.takeProfit}`)
+    const bar   = bars[bars.length - 1]
+    const price = bar.close
+    const barLow  = bar.low  || price
+    const barHigh = bar.high || price
+    console.log(`[FAST] Price:${price} Low:${barLow} High:${barHigh} | ${openPos.side} SL:${openPos.stopLoss} TP:${openPos.takeProfit}`)
 
     if (openPos.stopLoss) {
-      const slHit = openPos.side === 'LONG' ? price <= openPos.stopLoss : price >= openPos.stopLoss
+      // Use bar low/high (wick check) to match real tick-by-tick execution
+      const slHit = openPos.side === 'LONG' ? barLow <= openPos.stopLoss : barHigh >= openPos.stopLoss
       if (slHit) {
-        console.log(`🛑 SL HIT @ ${price}`)
-        await closeTrade(trades, price, 'stopLoss')
-        await log('trade', `Stop loss hit @ ${price}`, `SL was ${openPos.stopLoss}`)
+        console.log(`🛑 SL HIT (wick) @ ${openPos.stopLoss} | Bar low:${barLow}`)
+        await closeTrade(trades, openPos.stopLoss, 'stopLoss')
+        await log('trade', `Stop loss hit @ ${openPos.stopLoss}`, `SL was ${openPos.stopLoss} | bar low:${barLow}`)
         return
       }
     }
 
     if (openPos.takeProfit) {
-      const tpHit = openPos.side === 'LONG' ? price >= openPos.takeProfit : price <= openPos.takeProfit
-if (tpHit) {
-      console.log(`🎯 TP HIT @ ${price}`)
-      await closeTrade(trades, price, 'takeProfit')
-      await log('trade', `Take profit hit @ ${price}`, `TP was ${openPos.takeProfit}`)
-      return
+      // Use bar high/low (wick check) to match real tick-by-tick execution
+      const tpHit = openPos.side === 'LONG' ? barHigh >= openPos.takeProfit : barLow <= openPos.takeProfit
+      if (tpHit) {
+        console.log(`🎯 TP HIT (wick) @ ${openPos.takeProfit} | Bar high:${barHigh}`)
+        await closeTrade(trades, openPos.takeProfit, 'takeProfit')
+        await log('trade', `Take profit hit @ ${openPos.takeProfit}`, `TP was ${openPos.takeProfit} | bar high:${barHigh}`)
+        return
       }
     }
 

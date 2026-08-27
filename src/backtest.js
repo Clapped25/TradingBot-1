@@ -264,7 +264,8 @@ export function createBacktestEngine(config = {}) {
     if (!isBuy) return null
 
        // A+ setups only — require score 6+ (sweep + BOS + POI)
-    if ((result.score || 0) < 6) return null
+        if ((result.score || 0) < 5) return null
+
 
 
 

@@ -3,10 +3,9 @@
 // to candle indices — same shape as the EMA/RSI indicators, so they can
 // be merged into the same `ind` object the signal function already uses.
 //
-// IMPORTANT: swing points require `lookback` bars on both sides to confirm,
-// meaning a swing at index j is only "known" once bar j+lookback has printed.
-// Every detector below respects this — it never looks ahead of the bar
-// currently being evaluated, so results are safe to use in a live bot.
+// FIXED: swing points are now marked at the CONFIRMATION bar (i + lookback)
+// not at bar i. This matches live bot behavior — a swing is only "known"
+// once lookback bars have printed after it.
 
 // ── Swing highs / lows ──────────────────────────────────────────
 export function findSwingHighs(candles, lookback = 5) {
@@ -17,7 +16,8 @@ export function findSwingHighs(candles, lookback = 5) {
     for (let j = i - lookback; j <= i + lookback; j++) {
       if (j !== i && candles[j].high >= h) { isSwing = false; break }
     }
-    out[i] = isSwing
+    // Mark at confirmation bar — this is when live bot would know about it
+    if (isSwing && i + lookback < candles.length) out[i + lookback] = true
   }
   return out
 }
@@ -30,13 +30,13 @@ export function findSwingLows(candles, lookback = 5) {
     for (let j = i - lookback; j <= i + lookback; j++) {
       if (j !== i && candles[j].low <= l) { isSwing = false; break }
     }
-    out[i] = isSwing
+    // Mark at confirmation bar
+    if (isSwing && i + lookback < candles.length) out[i + lookback] = true
   }
   return out
 }
 
 // ── Fair Value Gaps ──────────────────────────────────────────────
-// 3-candle imbalance: candle[i-2] and candle[i] don't overlap, leaving a gap.
 export function findFVGs(candles) {
   const fvgs = []
   for (let i = 2; i < candles.length; i++) {
@@ -48,7 +48,6 @@ export function findFVGs(candles) {
       fvgs.push({ type: 'bearish', formedIdx: i, top: left.low, bottom: right.high, filled: false, filledIdx: null })
     }
   }
-  // Mark when price first trades back into each gap
   for (const fvg of fvgs) {
     for (let k = fvg.formedIdx + 1; k < candles.length; k++) {
       const c = candles[k]
@@ -59,8 +58,6 @@ export function findFVGs(candles) {
   return fvgs
 }
 
-// Boolean array: true on the bar price FIRST taps back into an FVG —
-// this is the typical ICT entry trigger, not just "a gap exists".
 export function fvgTouchSignal(candles, fvgs) {
   const bullishTouch = Array(candles.length).fill(false)
   const bearishTouch = Array(candles.length).fill(false)
@@ -73,11 +70,9 @@ export function fvgTouchSignal(candles, fvgs) {
 }
 
 // ── Inverse FVG ───────────────────────────────────────────────────
-// An FVG that gets fully closed through (not just touched) flips bias —
-// former support becomes resistance, or vice versa.
 export function findIFVGs(candles, fvgs) {
-  const bullish = Array(candles.length).fill(false) // flipped TO bullish (was a bearish FVG)
-  const bearish = Array(candles.length).fill(false) // flipped TO bearish (was a bullish FVG)
+  const bullish = Array(candles.length).fill(false)
+  const bearish = Array(candles.length).fill(false)
   for (const fvg of fvgs) {
     for (let k = fvg.formedIdx + 1; k < candles.length; k++) {
       const c = candles[k]
@@ -89,21 +84,18 @@ export function findIFVGs(candles, fvgs) {
 }
 
 // ── Liquidity sweeps ──────────────────────────────────────────────
-// Price wicks beyond a confirmed swing high/low (where stops sit), then
-// closes back on the other side — a classic stop-hunt/reversal signature.
 export function findLiquiditySweeps(candles, swingHighs, swingLows, lookback = 5) {
   const sweepHigh = Array(candles.length).fill(false)
-  const sweepLow = Array(candles.length).fill(false)
-
+  const sweepLow  = Array(candles.length).fill(false)
   for (let i = lookback; i < candles.length; i++) {
     const c = candles[i]
-    for (let j = i - lookback; j >= 0; j--) {
+    for (let j = i - 1; j >= Math.max(0, i - lookback * 3); j--) {
       if (swingHighs[j]) {
         if (c.high > candles[j].high && c.close < candles[j].high) sweepHigh[i] = true
         break
       }
     }
-    for (let j = i - lookback; j >= 0; j--) {
+    for (let j = i - 1; j >= Math.max(0, i - lookback * 3); j--) {
       if (swingLows[j]) {
         if (c.low < candles[j].low && c.close > candles[j].low) sweepLow[i] = true
         break
@@ -113,8 +105,7 @@ export function findLiquiditySweeps(candles, swingHighs, swingLows, lookback = 5
   return { sweepHigh, sweepLow }
 }
 
-// ── Rejection blocks ────────────────────────────────────────────
-// A candle with a long wick relative to its body, rejecting from a level.
+// ── Rejection blocks ─────────────────────────────────────────────
 export function findRejectionBlocks(candles, wickToBodyRatio = 2) {
   const bullish = Array(candles.length).fill(false)
   const bearish = Array(candles.length).fill(false)
@@ -129,34 +120,25 @@ export function findRejectionBlocks(candles, wickToBodyRatio = 2) {
   return { bullish, bearish }
 }
 
-// ── Break of Structure ───────────────────────────────────────────
-// Price closes beyond the most recent confirmed swing high/low.
+// ── Break of Structure ────────────────────────────────────────────
 export function findBOS(candles, swingHighs, swingLows, lookback = 5) {
   const bosBullish = Array(candles.length).fill(false)
   const bosBearish = Array(candles.length).fill(false)
   let lastSwingHigh = null, lastSwingLow = null
-
   for (let i = 0; i < candles.length; i++) {
-    const confirmIdx = i - lookback
-    if (confirmIdx >= 0) {
-      if (swingHighs[confirmIdx]) lastSwingHigh = candles[confirmIdx].high
-      if (swingLows[confirmIdx]) lastSwingLow = candles[confirmIdx].low
-    }
+    if (swingHighs[i]) lastSwingHigh = candles[i].high
+    if (swingLows[i])  lastSwingLow  = candles[i].low
     if (lastSwingHigh != null && candles[i].close > lastSwingHigh) {
-      bosBullish[i] = true
-      lastSwingHigh = null
+      bosBullish[i] = true; lastSwingHigh = null
     }
-    if (lastSwingLow != null && candles[i].close < lastSwingLow) {
-      bosBearish[i] = true
-      lastSwingLow = null
+    if (lastSwingLow  != null && candles[i].close < lastSwingLow) {
+      bosBearish[i] = true; lastSwingLow  = null
     }
   }
   return { bosBullish, bosBearish }
 }
 
-// ── CISD — Change in State of Delivery ───────────────────────────
-// First candle to close back through the open of the most recent
-// opposing candle — an early signal that order flow has shifted.
+// ── CISD ─────────────────────────────────────────────────────────
 export function findCISD(candles) {
   const bullish = Array(candles.length).fill(false)
   const bearish = Array(candles.length).fill(false)
@@ -169,17 +151,12 @@ export function findCISD(candles) {
 }
 
 // ── SMT Divergence ────────────────────────────────────────────────
-// Compares two correlated symbols (e.g. ES & NQ) at swing points.
-// Bearish SMT: symbol A makes a higher high while B fails to. Bullish SMT:
-// A makes a lower low while B fails to. This is a simplified approximation —
-// real SMT analysis is more discretionary, but this captures the core idea.
 export function findSMTDivergence(candlesA, candlesB, lookback = 5) {
   const len = Math.min(candlesA.length, candlesB.length)
   const swingHighsA = findSwingHighs(candlesA, lookback)
   const swingLowsA  = findSwingLows(candlesA, lookback)
   const swingHighsB = findSwingHighs(candlesB, lookback)
   const swingLowsB  = findSwingLows(candlesB, lookback)
-
   const bullish = Array(len).fill(false)
   const bearish = Array(len).fill(false)
 
@@ -192,23 +169,20 @@ export function findSMTDivergence(candlesA, candlesB, lookback = 5) {
   }
 
   for (let i = lookback * 2; i < len; i++) {
-    const confirmIdx = i - lookback
-    if (confirmIdx < 0) continue
-
-    if (swingHighsA[confirmIdx]) {
-      const priorA = priorTwoSwings(swingHighsA, confirmIdx - 1)
-      const priorB = priorTwoSwings(swingHighsB, confirmIdx)
+    if (swingHighsA[i]) {
+      const priorA = priorTwoSwings(swingHighsA, i - 1)
+      const priorB = priorTwoSwings(swingHighsB, i)
       if (priorA.length && priorB.length >= 2) {
-        const aNewHigh = candlesA[confirmIdx].high > candlesA[priorA[0]].high
+        const aNewHigh = candlesA[i].high > candlesA[priorA[0]].high
         const bNewHigh = candlesB[priorB[0]].high > candlesB[priorB[1]].high
         if (aNewHigh && !bNewHigh) bearish[i] = true
       }
     }
-    if (swingLowsA[confirmIdx]) {
-      const priorA = priorTwoSwings(swingLowsA, confirmIdx - 1)
-      const priorB = priorTwoSwings(swingLowsB, confirmIdx)
+    if (swingLowsA[i]) {
+      const priorA = priorTwoSwings(swingLowsA, i - 1)
+      const priorB = priorTwoSwings(swingLowsB, i)
       if (priorA.length && priorB.length >= 2) {
-        const aNewLow = candlesA[confirmIdx].low < candlesA[priorA[0]].low
+        const aNewLow = candlesA[i].low < candlesA[priorA[0]].low
         const bNewLow = candlesB[priorB[0]].low < candlesB[priorB[1]].low
         if (aNewLow && !bNewLow) bullish[i] = true
       }
@@ -217,41 +191,39 @@ export function findSMTDivergence(candlesA, candlesB, lookback = 5) {
   return { bullish, bearish }
 }
 
-// ── Orchestrator — computes everything once, returns a flat object ──
-// matching the same shape as buildIndicators() so it merges seamlessly.
+// ── Orchestrator ──────────────────────────────────────────────────
 export function buildSMCIndicators(candles, defs = [], candlesB = null) {
-  const lookback = defs.find(d => d.lookback)?.lookback || 5
+  const lookback   = defs.find(d => d.lookback)?.lookback || 5
   const swingHighs = findSwingHighs(candles, lookback)
-  const swingLows = findSwingLows(candles, lookback)
-  const fvgs = findFVGs(candles)
-  const fvgTouch = fvgTouchSignal(candles, fvgs)
-  const ifvg = findIFVGs(candles, fvgs)
-  const sweeps = findLiquiditySweeps(candles, swingHighs, swingLows, lookback)
-  const rejection = findRejectionBlocks(candles)
-  const bos = findBOS(candles, swingHighs, swingLows, lookback)
-  const cisd = findCISD(candles)
-  const smt = candlesB ? findSMTDivergence(candles, candlesB, lookback) : { bullish: [], bearish: [] }
+  const swingLows  = findSwingLows(candles, lookback)
+  const fvgs       = findFVGs(candles)
+  const fvgTouch   = fvgTouchSignal(candles, fvgs)
+  const ifvg       = findIFVGs(candles, fvgs)
+  const sweeps     = findLiquiditySweeps(candles, swingHighs, swingLows, lookback)
+  const rejection  = findRejectionBlocks(candles)
+  const bos        = findBOS(candles, swingHighs, swingLows, lookback)
+  const cisd       = findCISD(candles)
+  const smt        = candlesB ? findSMTDivergence(candles, candlesB, lookback) : { bullish: [], bearish: [] }
 
   const available = {
-    swingHigh: swingHighs,
-    swingLow: swingLows,
-    bullishFVG: fvgTouch.bullishTouch,
-    bearishFVG: fvgTouch.bearishTouch,
-    bullishIFVG: ifvg.bullish,
-    bearishIFVG: ifvg.bearish,
-    liquiditySweepLow: sweeps.sweepLow,
-    liquiditySweepHigh: sweeps.sweepHigh,
-    rejectionBlockBullish: rejection.bullish,
-    rejectionBlockBearish: rejection.bearish,
-    bosBullish: bos.bosBullish,
-    bosBearish: bos.bosBearish,
-    cisdBullish: cisd.bullish,
-    cisdBearish: cisd.bearish,
-    smtBullish: smt.bullish,
-    smtBearish: smt.bearish,
+    swingHigh:              swingHighs,
+    swingLow:               swingLows,
+    bullishFVG:             fvgTouch.bullishTouch,
+    bearishFVG:             fvgTouch.bearishTouch,
+    bullishIFVG:            ifvg.bullish,
+    bearishIFVG:            ifvg.bearish,
+    liquiditySweepLow:      sweeps.sweepLow,
+    liquiditySweepHigh:     sweeps.sweepHigh,
+    rejectionBlockBullish:  rejection.bullish,
+    rejectionBlockBearish:  rejection.bearish,
+    bosBullish:             bos.bosBullish,
+    bosBearish:             bos.bosBearish,
+    cisdBullish:            cisd.bullish,
+    cisdBearish:            cisd.bearish,
+    smtBullish:             smt.bullish,
+    smtBearish:             smt.bearish,
   }
 
-  // Only return the ids the strategy actually asked for
   const ids = defs.length ? defs.map(d => d.id) : Object.keys(available)
   const result = {}
   for (const id of ids) {

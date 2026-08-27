@@ -76,17 +76,20 @@ const STRATEGY_JSON_SHAPE = `{
   "notes": "Extra tips from the video, including which indicator lookback periods make sense for this timeframe"
 }`
 
-const SIGNAL_BODY_SPEC = `The signalBody is a JavaScript function body with params (i, candles, ind, pos):
-- Reference detectors as ind.<id>?.[i] using the exact ids from the indicators array
-- Return {action:'buy', reason:'...', factors:{...}} for long entry
-- The factors object is CRITICAL for the learning system — WITHOUT it the filter cannot work
-- ALWAYS include factors on every entry signal, no exceptions
-- Use these exact keys when relevant: fvg, ifvg, liquiditySweep, rejectionBlock, bos, cisd, smt, htfBias, session, inducement (boolean values, true only if that condition is actually met)
-- Example: factors:{fvg:true, bos:true, liquiditySweep:false, smt:false}
-- If you skip factors the learning filter is completely blind — include them always
-- Return {action:'sell', reason:'...'} for long exit — factors not required on exit
-- Return {action:'none'} when no signal
-- Always guard against null/undefined indicator values with ?. and Boolean()`
+const SIGNAL_BODY_SPEC = `The signalBody is a single-line JavaScript function body (no newlines, use semicolons).
+Params: (i, candles, ind, pos)
+
+MANDATORY TEMPLATE — adapt the conditions to match the strategy, keep this exact structure:
+"if(i<20)return{action:'none'};const swL=ind.liquiditySweepLow?.[i]||ind.liquiditySweepLow?.[i-1]||ind.liquiditySweepLow?.[i-2];const bosB=ind.bosBullish?.[i]||ind.bosBullish?.[i-1]||ind.bosBullish?.[i-2]||ind.bosBullish?.[i-3];const fvgB=ind.bullishFVG?.[i]||ind.bullishFVG?.[i-1];const obB=ind.rejectionBlockBullish?.[i]||ind.rejectionBlockBullish?.[i-1];const poiB=fvgB||obB;if(!pos?.isOpen&&swL&&bosB&&poiB)return{action:'buy',reason:'Sweep+BOS+POI',factors:{liquiditySweep:Boolean(swL),bos:Boolean(bosB),fvg:Boolean(fvgB),ob:Boolean(obB)}};return{action:'none'}"
+
+RULES — breaking these causes syntax errors that crash the bot:
+1. Every const MUST have = value: "const x=false" not "const x"  
+2. No newlines in signalBody — use semicolons only
+3. Always use ?. optional chaining: ind.bosBullish?.[i] never ind.bosBullish[i]
+4. All variables must be declared before use
+5. ALWAYS include factors:{} object on buy/sell returns
+6. Keep under 1000 characters total
+7. Only use these indicator ids: liquiditySweepLow, liquiditySweepHigh, bosBullish, bosBearish, bullishFVG, bearishFVG, rejectionBlockBullish, rejectionBlockBearish, cisdBullish, cisdBearish, smtBullish, smtBearish, swingHigh, swingLow`
 
 // ── Extract strategy from YouTube URL using Claude ────────────
 export async function extractStrategy(url, notes) {

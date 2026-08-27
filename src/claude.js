@@ -8,6 +8,25 @@ const TRANSCRIPT_URL = (videoId) => IS_LOCAL
 // ── Parse a strategy JSON response, with a precise diagnosis if it
 // got cut off mid-response (the actual cause of "Unterminated string"
 // errors) rather than just surfacing the raw parse error ───────────
+
+// ── Auto-widen single-bar indicator checks to multi-bar lookback ──
+// This fixes the "no trades" issue when AI generates single-bar conditions
+function widenSignalLookback(signalBody, lookback = 20) {
+  if (!signalBody) return signalBody
+  // Find all single-bar indicator checks like ind.bosBullish?.[i]
+  // and replace with multi-bar OR chain
+  return signalBody.replace(
+    /ind\.(\w+)\?\.\[i\](?!\|)/g,
+    (match, id) => {
+      // Build lookback chain: ind.X?.[i]||ind.X?.[i-1]||ind.X?.[i-2]||ind.X?.[i-3]
+      const chain = Array.from({length: lookback + 1}, (_, k) => 
+        k === 0 ? `ind.${id}?.[i]` : `ind.${id}?.[i-${k}]`
+      ).join('||')
+      return chain
+    }
+  )
+}
+
 function parseStrategyResponse(data, text) {
   const match = text.match(/\{[\s\S]*\}/)
   if (data.stop_reason === 'max_tokens') {
@@ -23,6 +42,10 @@ function parseStrategyResponse(data, text) {
     }
     if (parsed.indicatorDefs && !parsed.indicators) {
       parsed.indicators = parsed.indicatorDefs
+    }
+    // Auto-widen single-bar lookbacks to multi-bar for better signal firing
+    if (parsed.signalBody) {
+      parsed.signalBody = widenSignalLookback(parsed.signalBody, 20)
     }
     return parsed
   } catch (e) {

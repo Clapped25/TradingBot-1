@@ -582,63 +582,121 @@ function detectSMT(candlesMNQ, candlesMES) {
 
 // ── Indicators ────────────────────────────────────────────────────
 function buildIndicators(candles, smt = {}) {
-  const n = candles.length
-  const swH = new Array(n).fill(false), swL = new Array(n).fill(false)
-  for (let i = 3; i < n-3; i++) {
-    if (candles[i].high > candles[i-1].high && candles[i].high > candles[i-2].high &&
-        candles[i].high > candles[i-3].high && candles[i].high > candles[i+1].high &&
-        candles[i].high > candles[i+2].high && candles[i].high > candles[i+3].high) swH[i] = true
-    if (candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low &&
-        candles[i].low < candles[i-3].low && candles[i].low < candles[i+1].low &&
-        candles[i].low < candles[i+2].low && candles[i].low < candles[i+3].low) swL[i] = true
-  }
-  const sweepLow = new Array(n).fill(false), sweepHigh = new Array(n).fill(false)
-  for (let i = 6; i < n; i++) {
-    for (let j = i-1; j >= Math.max(0, i-15); j--) {
-      if (swL[j] && candles[i].low < candles[j].low && candles[i].close > candles[j].low) sweepLow[i] = true
-      if (swH[j] && candles[i].high > candles[j].high && candles[i].close < candles[j].high) sweepHigh[i] = true
+  const n       = candles.length
+  const lookback = 5
+
+  // ── Swing highs/lows (matches smc.js — no look-ahead) ────────────
+  const swH = new Array(n).fill(false)
+  const swL = new Array(n).fill(false)
+  for (let i = lookback; i < n - lookback; i++) {
+    const h = candles[i].high
+    let isH = true
+    for (let j = i - lookback; j <= i + lookback; j++) {
+      if (j !== i && candles[j].high >= h) { isH = false; break }
     }
-  }
-  const bosBull = new Array(n).fill(false), bosBear = new Array(n).fill(false)
-  let lsh = null, lsl = null
-  for (let i = 0; i < n; i++) {
-    if (swH[i]) lsh = candles[i].high
-    if (swL[i]) lsl = candles[i].low
-    if (lsh && candles[i].close > lsh) { bosBull[i] = true; lsh = null }
-    if (lsl && candles[i].close < lsl) { bosBear[i] = true; lsl = null }
-  }
-  const fvgBull = new Array(n).fill(false), fvgBear = new Array(n).fill(false)
-  for (let i = 2; i < n; i++) {
-    if (candles[i].low  > candles[i-2].high) fvgBull[i] = true
-    if (candles[i].high < candles[i-2].low)  fvgBear[i] = true
-  }
-  const obBull = new Array(n).fill(false), obBear = new Array(n).fill(false)
-  for (let i = 1; i < n; i++) {
-    if (candles[i-1].close < candles[i-1].open && candles[i].close > candles[i-1].open) obBull[i] = true
-    if (candles[i-1].close > candles[i-1].open && candles[i].close < candles[i-1].open) obBear[i] = true
+    swH[i] = isH
+
+    const l = candles[i].low
+    let isL = true
+    for (let j = i - lookback; j <= i + lookback; j++) {
+      if (j !== i && candles[j].low <= l) { isL = false; break }
+    }
+    swL[i] = isL
   }
 
-// Turtle Soup
+  // ── Liquidity sweeps (matches smc.js) ────────────────────────────
+  const sweepLow  = new Array(n).fill(false)
+  const sweepHigh = new Array(n).fill(false)
+  for (let i = lookback; i < n; i++) {
+    const c = candles[i]
+    for (let j = i - 1; j >= Math.max(0, i - lookback * 3); j--) {
+      if (swH[j]) {
+        if (c.high > candles[j].high && c.close < candles[j].high) sweepHigh[i] = true
+        break
+      }
+    }
+    for (let j = i - 1; j >= Math.max(0, i - lookback * 3); j--) {
+      if (swL[j]) {
+        if (c.low < candles[j].low && c.close > candles[j].low) sweepLow[i] = true
+        break
+      }
+    }
+  }
+
+  // ── BOS — Break of Structure (matches smc.js) ─────────────────────
+  const bosBull = new Array(n).fill(false)
+  const bosBear = new Array(n).fill(false)
+  let lastSwingHigh = null, lastSwingLow = null
+  for (let i = 0; i < n; i++) {
+    const confirmIdx = i - lookback
+    if (confirmIdx >= 0) {
+      if (swH[confirmIdx]) lastSwingHigh = candles[confirmIdx].high
+      if (swL[confirmIdx]) lastSwingLow  = candles[confirmIdx].low
+    }
+    if (lastSwingHigh != null && candles[i].close > lastSwingHigh) {
+      bosBull[i] = true; lastSwingHigh = null
+    }
+    if (lastSwingLow  != null && candles[i].close < lastSwingLow) {
+      bosBear[i] = true; lastSwingLow  = null
+    }
+  }
+
+  // ── FVG (no look-ahead) ──────────────────────────────────────────
+  const fvgBull = new Array(n).fill(false)
+  const fvgBear = new Array(n).fill(false)
+  for (let i = 2; i < n; i++) {
+    if (candles[i].low   > candles[i-2].high) fvgBull[i] = true
+    if (candles[i].high  < candles[i-2].low)  fvgBear[i] = true
+  }
+
+  // ── Rejection blocks (OB) ─────────────────────────────────────────
+  const obBull = new Array(n).fill(false)
+  const obBear = new Array(n).fill(false)
+  for (let i = 1; i < n; i++) {
+    const body      = Math.abs(candles[i].close - candles[i].open) || 0.0001
+    const upperWick = candles[i].high - Math.max(candles[i].open, candles[i].close)
+    const lowerWick = Math.min(candles[i].open, candles[i].close) - candles[i].low
+    if (lowerWick > body * 2 && lowerWick > upperWick) obBull[i] = true
+    if (upperWick > body * 2 && upperWick > lowerWick) obBear[i] = true
+  }
+
+  // ── CISD ──────────────────────────────────────────────────────────
+  const cisdBull = new Array(n).fill(false)
+  const cisdBear = new Array(n).fill(false)
+  for (let i = 1; i < n; i++) {
+    if (candles[i-1].close < candles[i-1].open && candles[i].close > candles[i-1].open) cisdBull[i] = true
+    if (candles[i-1].close > candles[i-1].open && candles[i].close < candles[i-1].open) cisdBear[i] = true
+  }
+
+  // ── Turtle Soup ───────────────────────────────────────────────────
   const turtleSoupLong  = new Array(n).fill(false)
   const turtleSoupShort = new Array(n).fill(false)
   for (let i = 21; i < n; i++) {
     const low20  = Math.min(...candles.slice(i-20, i).map(b => b.low))
     const high20 = Math.max(...candles.slice(i-20, i).map(b => b.high))
-    if (candles[i].low < low20 && candles[i].close > low20) turtleSoupLong[i] = true
+    if (candles[i].low < low20   && candles[i].close > low20)  turtleSoupLong[i]  = true
     if (candles[i].high > high20 && candles[i].close < high20) turtleSoupShort[i] = true
   }
 
   return {
-    liquiditySweepLow: sweepLow, liquiditySweepHigh: sweepHigh,
-    bosBullish: bosBull, bosBearish: bosBear,
-    bullishFVG: fvgBull, bearishFVG: fvgBear,
-    bullishIFVG: fvgBear, bearishIFVG: fvgBull,
-    rejectionBlockBullish: obBull, rejectionBlockBearish: obBear,
-    cisdBullish: bosBull, cisdBearish: bosBear,
-    smtBullish: new Array(n).fill(false).fill(smt?.smtBullish || false, n-1),
-    smtBearish: new Array(n).fill(false).fill(smt?.smtBearish || false, n-1),
-    swingHigh: swH, swingLow: swL,
-    turtleSoupLong, turtleSoupShort,
+    liquiditySweepLow:      sweepLow,
+    liquiditySweepHigh:     sweepHigh,
+    bosBullish:             bosBull,
+    bosBearish:             bosBear,
+    bullishFVG:             fvgBull,
+    bearishFVG:             fvgBear,
+    bullishIFVG:            fvgBear,
+    bearishIFVG:            fvgBull,
+    rejectionBlockBullish:  obBull,
+    rejectionBlockBearish:  obBear,
+    cisdBullish:            cisdBull,
+    cisdBearish:            cisdBear,
+    smtBullish:  new Array(n).fill(false).fill(smt?.smtBullish || false, n-1),
+    smtBearish:  new Array(n).fill(false).fill(smt?.smtBearish || false, n-1),
+    swingHigh:          swH,
+    swingLow:           swL,
+    turtleSoupLong,
+    turtleSoupShort,
   }
 }
 

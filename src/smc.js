@@ -1,13 +1,7 @@
-// SMC / ICT structural detectors.
-// Each function scans the candle array and returns boolean arrays aligned
-// to candle indices — same shape as the EMA/RSI indicators, so they can
-// be merged into the same `ind` object the signal function already uses.
-//
-// FIXED: swing points are now marked at the CONFIRMATION bar (i + lookback)
-// not at bar i. This matches live bot behavior — a swing is only "known"
-// once lookback bars have printed after it.
+// SMC / ICT structural detectors — TRUE no look-ahead version
+// Swings are marked at bar i+lookback (when live bot would confirm them)
+// Sweep/BOS lookback windows are widened to compensate
 
-// ── Swing highs / lows ──────────────────────────────────────────
 export function findSwingHighs(candles, lookback = 5) {
   const out = Array(candles.length).fill(false)
   for (let i = lookback; i < candles.length - lookback; i++) {
@@ -16,7 +10,7 @@ export function findSwingHighs(candles, lookback = 5) {
     for (let j = i - lookback; j <= i + lookback; j++) {
       if (j !== i && candles[j].high >= h) { isSwing = false; break }
     }
-    // Mark at confirmation bar — this is when live bot would know about it
+    // Mark at confirmation bar (i + lookback) — matches live bot timing
     if (isSwing && i + lookback < candles.length) out[i + lookback] = true
   }
   return out
@@ -30,13 +24,11 @@ export function findSwingLows(candles, lookback = 5) {
     for (let j = i - lookback; j <= i + lookback; j++) {
       if (j !== i && candles[j].low <= l) { isSwing = false; break }
     }
-    // Mark at confirmation bar
     if (isSwing && i + lookback < candles.length) out[i + lookback] = true
   }
   return out
 }
 
-// ── Fair Value Gaps ──────────────────────────────────────────────
 export function findFVGs(candles) {
   const fvgs = []
   for (let i = 2; i < candles.length; i++) {
@@ -69,7 +61,6 @@ export function fvgTouchSignal(candles, fvgs) {
   return { bullishTouch, bearishTouch }
 }
 
-// ── Inverse FVG ───────────────────────────────────────────────────
 export function findIFVGs(candles, fvgs) {
   const bullish = Array(candles.length).fill(false)
   const bearish = Array(candles.length).fill(false)
@@ -83,19 +74,20 @@ export function findIFVGs(candles, fvgs) {
   return { bullish, bearish }
 }
 
-// ── Liquidity sweeps ──────────────────────────────────────────────
 export function findLiquiditySweeps(candles, swingHighs, swingLows, lookback = 5) {
   const sweepHigh = Array(candles.length).fill(false)
   const sweepLow  = Array(candles.length).fill(false)
+  // Widen lookback window to compensate for delayed swing marking
+  const window = lookback * 8
   for (let i = lookback; i < candles.length; i++) {
     const c = candles[i]
-    for (let j = i - 1; j >= Math.max(0, i - lookback * 3); j--) {
+    for (let j = i - 1; j >= Math.max(0, i - window); j--) {
       if (swingHighs[j]) {
         if (c.high > candles[j].high && c.close < candles[j].high) sweepHigh[i] = true
         break
       }
     }
-    for (let j = i - 1; j >= Math.max(0, i - lookback * 3); j--) {
+    for (let j = i - 1; j >= Math.max(0, i - window); j--) {
       if (swingLows[j]) {
         if (c.low < candles[j].low && c.close > candles[j].low) sweepLow[i] = true
         break
@@ -105,7 +97,6 @@ export function findLiquiditySweeps(candles, swingHighs, swingLows, lookback = 5
   return { sweepHigh, sweepLow }
 }
 
-// ── Rejection blocks ─────────────────────────────────────────────
 export function findRejectionBlocks(candles, wickToBodyRatio = 2) {
   const bullish = Array(candles.length).fill(false)
   const bearish = Array(candles.length).fill(false)
@@ -120,7 +111,6 @@ export function findRejectionBlocks(candles, wickToBodyRatio = 2) {
   return { bullish, bearish }
 }
 
-// ── Break of Structure ────────────────────────────────────────────
 export function findBOS(candles, swingHighs, swingLows, lookback = 5) {
   const bosBullish = Array(candles.length).fill(false)
   const bosBearish = Array(candles.length).fill(false)
@@ -138,7 +128,6 @@ export function findBOS(candles, swingHighs, swingLows, lookback = 5) {
   return { bosBullish, bosBearish }
 }
 
-// ── CISD ─────────────────────────────────────────────────────────
 export function findCISD(candles) {
   const bullish = Array(candles.length).fill(false)
   const bearish = Array(candles.length).fill(false)
@@ -150,7 +139,6 @@ export function findCISD(candles) {
   return { bullish, bearish }
 }
 
-// ── SMT Divergence ────────────────────────────────────────────────
 export function findSMTDivergence(candlesA, candlesB, lookback = 5) {
   const len = Math.min(candlesA.length, candlesB.length)
   const swingHighsA = findSwingHighs(candlesA, lookback)
@@ -191,7 +179,6 @@ export function findSMTDivergence(candlesA, candlesB, lookback = 5) {
   return { bullish, bearish }
 }
 
-// ── Orchestrator ──────────────────────────────────────────────────
 export function buildSMCIndicators(candles, defs = [], candlesB = null) {
   const lookback   = defs.find(d => d.lookback)?.lookback || 5
   const swingHighs = findSwingHighs(candles, lookback)

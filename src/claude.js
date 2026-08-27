@@ -120,7 +120,7 @@ ${SIGNAL_BODY_SPEC}`
       : { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
-      max_tokens: 2000,
+      max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
@@ -268,7 +268,7 @@ Return ONLY raw JSON (no markdown, no backticks):
       : { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
-      max_tokens: 2200,
+      max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
@@ -324,7 +324,7 @@ Return ONLY raw JSON (no markdown, no backticks):
       : { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
-      max_tokens: 2200,
+      max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
@@ -379,7 +379,7 @@ Return ONLY a JSON object like this, no other text:
       : { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
-      max_tokens: 2000,
+      max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }],
     }),
   })

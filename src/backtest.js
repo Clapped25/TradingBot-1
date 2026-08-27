@@ -263,6 +263,10 @@ export function createBacktestEngine(config = {}) {
     const isSell = false  // longs only mode
     if (!isBuy) return null
 
+    // A+ setups only — require score 7+ (sweep + BOS + POI + at least one more)
+    if ((result.score || 0) < 7) return null
+
+
     // ── Bias filter with lock ─────────────────────────────────────
     // Recalculate bias every 12 bars (1 hour) for performance
     const biasResult = (i % 12 === 0 || i === 10)

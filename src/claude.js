@@ -76,20 +76,11 @@ const STRATEGY_JSON_SHAPE = `{
   "notes": "Extra tips from the video, including which indicator lookback periods make sense for this timeframe"
 }`
 
-const SIGNAL_BODY_SPEC = `The signalBody is a single-line JavaScript function body (no newlines, use semicolons).
-Params: (i, candles, ind, pos)
-
-MANDATORY TEMPLATE — adapt the conditions to match the strategy, keep this exact structure:
-"if(i<20)return{action:'none'};const swL=ind.liquiditySweepLow?.[i]||ind.liquiditySweepLow?.[i-1]||ind.liquiditySweepLow?.[i-2];const bosB=ind.bosBullish?.[i]||ind.bosBullish?.[i-1]||ind.bosBullish?.[i-2]||ind.bosBullish?.[i-3];const fvgB=ind.bullishFVG?.[i]||ind.bullishFVG?.[i-1];const obB=ind.rejectionBlockBullish?.[i]||ind.rejectionBlockBullish?.[i-1];const poiB=fvgB||obB;if(!pos?.isOpen&&swL&&bosB&&poiB)return{action:'buy',reason:'Sweep+BOS+POI',factors:{liquiditySweep:Boolean(swL),bos:Boolean(bosB),fvg:Boolean(fvgB),ob:Boolean(obB)}};return{action:'none'}"
-
-RULES — breaking these causes syntax errors that crash the bot:
-1. Every const MUST have = value: "const x=false" not "const x"  
-2. No newlines in signalBody — use semicolons only
-3. Always use ?. optional chaining: ind.bosBullish?.[i] never ind.bosBullish[i]
-4. All variables must be declared before use
-5. ALWAYS include factors:{} object on buy/sell returns
-6. Keep under 1000 characters total
-7. Only use these indicator ids: liquiditySweepLow, liquiditySweepHigh, bosBullish, bosBearish, bullishFVG, bearishFVG, rejectionBlockBullish, rejectionBlockBearish, cisdBullish, cisdBearish, smtBullish, smtBearish, swingHigh, swingLow`
+const SIGNAL_BODY_SPEC = `The signalBody is a JavaScript function body (single line, semicolons only, no newlines).
+Params: (i, candles, ind, pos). Available indicator ids: liquiditySweepLow, liquiditySweepHigh, bosBullish, bosBearish, bullishFVG, bearishFVG, rejectionBlockBullish, rejectionBlockBearish, cisdBullish, cisdBearish, smtBullish, smtBearish, swingHigh, swingLow.
+Rules: use ind.<id>?.[i] syntax. Every const must be initialized. Include factors:{} on every buy/sell.
+Example: "if(i<20)return{action:'none'};const swL=ind.liquiditySweepLow?.[i]||ind.liquiditySweepLow?.[i-1];const bosB=ind.bosBullish?.[i]||ind.bosBullish?.[i-1];const fvgB=ind.bullishFVG?.[i]||ind.bullishFVG?.[i-1];if(!pos?.isOpen&&swL&&bosB&&fvgB)return{action:'buy',reason:'Sweep+BOS+FVG',factors:{liquiditySweep:true,bos:true,fvg:true}};return{action:'none'}"
+`
 
 // ── Extract strategy from YouTube URL using Claude ────────────
 export async function extractStrategy(url, notes) {

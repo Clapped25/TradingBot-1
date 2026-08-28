@@ -271,7 +271,8 @@ export function createBacktestEngine(config = {}) {
       if (indicators.bosBullish?.[i]) bosSeenAt = i
     }
     // Reset if too old
-    if ((i - sweepSeenAt) > sweepWindow) { sweepSeenAt = -Infinity; bosSeenAt = -Infinity }
+    if (sweepSeenAt > -Infinity && (i - sweepSeenAt) > sweepWindow) { sweepSeenAt = -Infinity; bosSeenAt = -Infinity }
+
 
     // Inject sequential state into signal via indicators
     const seqIndicators = {

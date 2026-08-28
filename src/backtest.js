@@ -288,7 +288,7 @@ export function createBacktestEngine(config = {}) {
 
     // If signal doesn't use _sweepActive, override with sequential logic
     let isBuy = result.action === 'buy' || result.action === 'LONG'
-    if (!isBuy && seqIndicators._sweepActive && seqIndicators._bosAfterSweep) {
+    if (!isBuy && seqIndicators._sweepActive && seqIndicators._bosAfterSweep) { console.log('Sequential trigger at bar', i, 'pos:', pos)
       const fvgB = seqIndicators.bullishFVG?.[i]||seqIndicators.bullishFVG?.[i-1]||seqIndicators.bullishFVG?.[i-2]||seqIndicators.bullishFVG?.[i-3]||seqIndicators.bullishFVG?.[i-4]||seqIndicators.bullishFVG?.[i-5]
       const obB  = seqIndicators.rejectionBlockBullish?.[i]||seqIndicators.rejectionBlockBullish?.[i-1]||seqIndicators.rejectionBlockBullish?.[i-2]||seqIndicators.rejectionBlockBullish?.[i-3]
       const cisdB = seqIndicators.cisdBullish?.[i]||seqIndicators.cisdBullish?.[i-1]||seqIndicators.cisdBullish?.[i-2]

@@ -177,8 +177,8 @@ export function createBacktestEngine(config = {}) {
   // Tracks sweep/BOS/POI happening across multiple bars
   let sweepSeenAt  = -Infinity  // bar index when last bullish sweep was seen
   let bosSeenAt    = -Infinity  // bar index when BOS happened after sweep
-  const sweepWindow = 40        // sweep valid for 40 bars (200 min)
-  const bosWindow   = 30        // BOS valid for 30 bars after sweep
+  const sweepWindow = 12        // sweep valid for 12 bars (60 min)
+  const bosWindow   = 8         // BOS valid for 8 bars after sweep
 
   function closeTrade(i, candles, exitPrice, reason) {
     const entry     = trades[trades.length - 1]
@@ -271,10 +271,7 @@ export function createBacktestEngine(config = {}) {
       if (indicators.bosBullish?.[i]) bosSeenAt = i
     }
     // Reset if too old
-    if (sweepSeenAt > -Infinity && (i - sweepSeenAt) > sweepWindow) { sweepSeenAt = -Infinity; bosSeenAt = -Infinity }
-    
-
-
+    if ((i - sweepSeenAt) > sweepWindow) { sweepSeenAt = -Infinity; bosSeenAt = -Infinity }
 
     // Inject sequential state into signal via indicators
     const seqIndicators = {
@@ -285,14 +282,25 @@ export function createBacktestEngine(config = {}) {
       _bosAfterSweep: bosSeenAt > sweepSeenAt && (i - bosSeenAt) <= bosWindow,
     }
 
-        if (seqIndicators._sweepActive && seqIndicators._bosAfterSweep) console.log(`Bar ${i}: SHOULD TRADE - fvg:${seqIndicators.bullishFVG?.[i]} ob:${seqIndicators.rejectionBlockBullish?.[i]} cisd:${seqIndicators.cisdBullish?.[i]}`)
-
+    // Run signal with sequential state injected
     let result
     try { result = signalFn(i, candles, seqIndicators, { isOpen: false, side: 'FLAT' }) } catch { result = { action: 'none' } }
-    const isBuy  = result.action === 'buy'  || result.action === 'LONG'
+
+    // If signal doesn't use _sweepActive, override with sequential logic
+    let isBuy = result.action === 'buy' || result.action === 'LONG'
+    if (!isBuy && seqIndicators._sweepActive && seqIndicators._bosAfterSweep) {
+      const fvgB = seqIndicators.bullishFVG?.[i]||seqIndicators.bullishFVG?.[i-1]||seqIndicators.bullishFVG?.[i-2]||seqIndicators.bullishFVG?.[i-3]||seqIndicators.bullishFVG?.[i-4]||seqIndicators.bullishFVG?.[i-5]
+      const obB  = seqIndicators.rejectionBlockBullish?.[i]||seqIndicators.rejectionBlockBullish?.[i-1]||seqIndicators.rejectionBlockBullish?.[i-2]||seqIndicators.rejectionBlockBullish?.[i-3]
+      const cisdB = seqIndicators.cisdBullish?.[i]||seqIndicators.cisdBullish?.[i-1]||seqIndicators.cisdBullish?.[i-2]
+      if (fvgB || obB || cisdB) {
+        isBuy = true
+        result = { action: 'buy', reason: 'Sweep→BOS→POI', score: 6, factors: { liquiditySweep: true, bos: true, fvg: Boolean(fvgB), ob: Boolean(obB), cisd: Boolean(cisdB) } }
+      }
+    }
     const isSell = false  // longs only mode
     if (!isBuy) return null
 
+  
 
 
     // ── Bias filter with lock ─────────────────────────────────────

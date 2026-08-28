@@ -272,6 +272,7 @@ export function createBacktestEngine(config = {}) {
     }
     // Reset if too old
     if (sweepSeenAt > -Infinity && (i - sweepSeenAt) > sweepWindow) { sweepSeenAt = -Infinity; bosSeenAt = -Infinity }
+    if (i % 100 === 0) console.log(`Bar ${i}: sweepSeenAt=${sweepSeenAt} bosSeenAt=${bosSeenAt} _sweep=${sweepSeenAt > -Infinity && (i - sweepSeenAt) <= sweepWindow} _bos=${bosSeenAt > sweepSeenAt && (i - bosSeenAt) <= bosWindow}`)
 
 
     // Inject sequential state into signal via indicators

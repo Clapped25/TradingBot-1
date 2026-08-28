@@ -288,7 +288,7 @@ export function createBacktestEngine(config = {}) {
 
     // If signal doesn't use _sweepActive, override with sequential logic
     let isBuy = result.action === 'buy' || result.action === 'LONG'
-    if (!isBuy && seqIndicators._sweepActive && seqIndicators._bosAfterSweep) { console.log('Sequential trigger at bar', i, 'pos:', pos)
+    if (!isBuy && seqIndicators._sweepActive && seqIndicators._bosAfterSweep) {
       const fvgB = seqIndicators.bullishFVG?.[i]||seqIndicators.bullishFVG?.[i-1]||seqIndicators.bullishFVG?.[i-2]||seqIndicators.bullishFVG?.[i-3]||seqIndicators.bullishFVG?.[i-4]||seqIndicators.bullishFVG?.[i-5]
       const obB  = seqIndicators.rejectionBlockBullish?.[i]||seqIndicators.rejectionBlockBullish?.[i-1]||seqIndicators.rejectionBlockBullish?.[i-2]||seqIndicators.rejectionBlockBullish?.[i-3]
       const cisdB = seqIndicators.cisdBullish?.[i]||seqIndicators.cisdBullish?.[i-1]||seqIndicators.cisdBullish?.[i-2]
@@ -356,12 +356,22 @@ export function createBacktestEngine(config = {}) {
     let stopPrice = result.stopPrice
     if (stopPrice == null) {
       if (isBuy) {
+        // Try swing low first
         for (let j = i; j >= Math.max(0, i - stopLookback); j--) {
           if (indicators.swingLow?.[j]) { stopPrice = candles[j].low; break }
+        }
+        // Fall back to ATR-based stop if no swing found
+        if (stopPrice == null) {
+          const atrFallback = calcATR(candles.slice(Math.max(0, i - 20), i + 1))
+          stopPrice = c.close - (atrFallback * 1.5)
         }
       } else {
         for (let j = i; j >= Math.max(0, i - stopLookback); j--) {
           if (indicators.swingHigh?.[j]) { stopPrice = candles[j].high; break }
+        }
+        if (stopPrice == null) {
+          const atrFallback = calcATR(candles.slice(Math.max(0, i - 20), i + 1))
+          stopPrice = c.close + (atrFallback * 1.5)
         }
       }
     }

@@ -285,13 +285,14 @@ export function createBacktestEngine(config = {}) {
       _bosAfterSweep: bosSeenAt > sweepSeenAt && (i - bosSeenAt) <= bosWindow,
     }
 
+        if (seqIndicators._sweepActive && seqIndicators._bosAfterSweep) console.log(`Bar ${i}: SHOULD TRADE - fvg:${seqIndicators.bullishFVG?.[i]} ob:${seqIndicators.rejectionBlockBullish?.[i]} cisd:${seqIndicators.cisdBullish?.[i]}`)
+
     let result
     try { result = signalFn(i, candles, seqIndicators, { isOpen: false, side: 'FLAT' }) } catch { result = { action: 'none' } }
     const isBuy  = result.action === 'buy'  || result.action === 'LONG'
     const isSell = false  // longs only mode
     if (!isBuy) return null
 
-  
 
 
     // ── Bias filter with lock ─────────────────────────────────────

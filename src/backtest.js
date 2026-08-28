@@ -272,7 +272,8 @@ export function createBacktestEngine(config = {}) {
     }
     // Reset if too old
     if (sweepSeenAt > -Infinity && (i - sweepSeenAt) > sweepWindow) { sweepSeenAt = -Infinity; bosSeenAt = -Infinity }
-    if (i % 100 === 0) console.log(`Bar ${i}: sweepSeenAt=${sweepSeenAt} bosSeenAt=${bosSeenAt} _sweep=${sweepSeenAt > -Infinity && (i - sweepSeenAt) <= sweepWindow} _bos=${bosSeenAt > sweepSeenAt && (i - bosSeenAt) <= bosWindow}`)
+    if (i % 100 === 0) { const fvg=seqIndicators.bullishFVG?.[i]||seqIndicators.bullishFVG?.[i-1]||seqIndicators.bullishFVG?.[i-2]; const ob=seqIndicators.rejectionBlockBullish?.[i]||seqIndicators.rejectionBlockBullish?.[i-1]; console.log(`Bar ${i}: _sweep=${seqIndicators._sweepActive} _bos=${seqIndicators._bosAfterSweep} fvg=${fvg} ob=${ob}`) }
+
 
 
     // Inject sequential state into signal via indicators

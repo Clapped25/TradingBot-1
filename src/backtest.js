@@ -173,6 +173,13 @@ export function createBacktestEngine(config = {}) {
   const trades     = []
   let dailyLevelsCache = null
 
+  // ── Sequential state tracking ─────────────────────────────────
+  // Tracks sweep/BOS/POI happening across multiple bars
+  let sweepSeenAt  = -Infinity  // bar index when last bullish sweep was seen
+  let bosSeenAt    = -Infinity  // bar index when BOS happened after sweep
+  const sweepWindow = 40        // sweep valid for 40 bars (200 min)
+  const bosWindow   = 30        // BOS valid for 30 bars after sweep
+
   function closeTrade(i, candles, exitPrice, reason) {
     const entry     = trades[trades.length - 1]
     const direction = pos === 'long' ? 1 : -1
@@ -257,8 +264,26 @@ export function createBacktestEngine(config = {}) {
     if (isMarketClose(c.time)) return null
 
     // Get signal
+    // ── Update sequential state ────────────────────────────────────
+    // Track sweep and BOS happening across different bars
+    if (indicators.liquiditySweepLow?.[i]) sweepSeenAt = i
+    if (sweepSeenAt > -Infinity && (i - sweepSeenAt) <= sweepWindow) {
+      if (indicators.bosBullish?.[i]) bosSeenAt = i
+    }
+    // Reset if too old
+    if ((i - sweepSeenAt) > sweepWindow) { sweepSeenAt = -Infinity; bosSeenAt = -Infinity }
+
+    // Inject sequential state into signal via indicators
+    const seqIndicators = {
+      ...indicators,
+      // Override liquiditySweepLow/bosBullish with sequential state
+      // These show true if conditions were met within valid windows
+      _sweepActive: sweepSeenAt > -Infinity && (i - sweepSeenAt) <= sweepWindow,
+      _bosAfterSweep: bosSeenAt > sweepSeenAt && (i - bosSeenAt) <= bosWindow,
+    }
+
     let result
-    try { result = signalFn(i, candles, indicators, { isOpen: false, side: 'FLAT' }) } catch { result = { action: 'none' } }
+    try { result = signalFn(i, candles, seqIndicators, { isOpen: false, side: 'FLAT' }) } catch { result = { action: 'none' } }
     const isBuy  = result.action === 'buy'  || result.action === 'LONG'
     const isSell = false  // longs only mode
     if (!isBuy) return null
@@ -365,6 +390,9 @@ export function createBacktestEngine(config = {}) {
     entryIdx = i
     openHigh = c.high
     openLow  = c.low
+    // Reset sequential state after entry
+    sweepSeenAt = -Infinity
+    bosSeenAt   = -Infinity
 
     const entryTrade = {
       type: 'entry', barIndex: i, price: entryPrice, time: c.time,

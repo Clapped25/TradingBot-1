@@ -72,7 +72,7 @@ export default function StrategyReview({ strategy, onStrategyChange, onBack, onB
         throw new Error(`Signal function error: ${e.message}`)
       }
 
-   const riskConfig = { symbolKey: symbol, accountBalance, riskPct, rMultiple, useMicro, useLearning, cooldownBars: 3, minScore: 5 }
+   const riskConfig = { symbolKey: symbol, accountBalance, riskPct, rMultiple, useMicro, useLearning, cooldownBars: 3, minScore: 6 }
 
       const periodLabel = sorted.length === 1
         ? sorted[0].label

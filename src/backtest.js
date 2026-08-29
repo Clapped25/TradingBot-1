@@ -178,8 +178,10 @@ export function createBacktestEngine(config = {}) {
   // Tracks sweep/BOS/POI happening across multiple bars
   let sweepSeenAt  = -Infinity  // bar index when last bullish sweep was seen
   let bosSeenAt    = -Infinity  // bar index when BOS happened after sweep
-  const sweepWindow = 12        // sweep valid for 12 bars (60 min)
-  const bosWindow   = 8         // BOS valid for 8 bars after sweep
+  let lossStreak   = 0          // consecutive losses (Fix 5)
+  let streakCooldownUntil = -Infinity  // bar index until which entries are blocked
+  const sweepWindow = 10        // sweep valid for 10 bars (tightened from 20/12)
+  const bosWindow   = 8         // BOS must occur within 8 bars of the sweep
 
   function closeTrade(i, candles, exitPrice, reason) {
     const entry     = trades[trades.length - 1]
@@ -214,6 +216,14 @@ export function createBacktestEngine(config = {}) {
     trades.push(exitTrade)
     pos = null; lastExitIdx = i; entryIdx = null
     openHigh = -Infinity; openLow = Infinity
+
+    // Fix 5: track consecutive losses, cooldown 5 extra bars after streak of 3+
+    if (dollarPnl <= 0) {
+      lossStreak++
+      if (lossStreak >= 3) streakCooldownUntil = i + 5
+    } else {
+      lossStreak = 0
+    }
     return exitTrade
   }
 
@@ -260,6 +270,7 @@ export function createBacktestEngine(config = {}) {
 
     // ── Flat — look for entry ─────────────────────────────────────
     if (i - lastExitIdx < cooldownBars) return null
+    if (i < streakCooldownUntil) return null  // Fix 5: extra cooldown after 3+ loss streak
 
     // Market close filter
     if (isMarketClose(c.time)) return null
@@ -293,13 +304,21 @@ export function createBacktestEngine(config = {}) {
       const fvgB = seqIndicators.bullishFVG?.[i]||seqIndicators.bullishFVG?.[i-1]||seqIndicators.bullishFVG?.[i-2]||seqIndicators.bullishFVG?.[i-3]||seqIndicators.bullishFVG?.[i-4]||seqIndicators.bullishFVG?.[i-5]
       const obB  = seqIndicators.rejectionBlockBullish?.[i]||seqIndicators.rejectionBlockBullish?.[i-1]||seqIndicators.rejectionBlockBullish?.[i-2]||seqIndicators.rejectionBlockBullish?.[i-3]
       const cisdB = seqIndicators.cisdBullish?.[i]||seqIndicators.cisdBullish?.[i-1]||seqIndicators.cisdBullish?.[i-2]
+      // Regime filter — skip trending_down entirely (bullish reversal strategy
+      // fighting a downtrend is structurally misaligned: ~35% win rate vs ~46% elsewhere)
+      const regimeNow = detectRegime(candles, i)
+      const regimeOK  = regimeNow !== 'trending_down'
+
+      // Fix 4: in trending_up, require FVG specifically (ob-only entries underperform)
+      const poiOK = regimeNow === 'trending_up' ? Boolean(fvgB) : (fvgB || obB || cisdB)
+
       // Grade the setup — more confluence = higher score
       const seqScore = 2                      // sweep (always true here)
                      + 2                      // BOS after sweep (always true here)
                      + (fvgB  ? 2 : 0)        // FVG is the strongest POI
                      + (obB   ? 1 : 0)        // rejection block
                      + (cisdB ? 1 : 0)        // change in state of delivery
-      if ((fvgB || obB || cisdB) && seqScore >= minScore) {
+      if (regimeOK && poiOK && seqScore >= minScore) {
         isBuy = true
         result = { action: 'buy', reason: `Sweep→BOS→POI (score ${seqScore})`, score: seqScore, factors: { liquiditySweep: true, bos: true, fvg: Boolean(fvgB), ob: Boolean(obB), cisd: Boolean(cisdB) } }
       }

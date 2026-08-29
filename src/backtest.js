@@ -158,6 +158,7 @@ export function createBacktestEngine(config = {}) {
     stopLookback         = 30,
     useLearning          = true,
     learningMinSample    = 8,
+    minScore             = 5,   // A+ filter: 5=normal, 6=strong, 7=A+ only
     learningExpectancyFloor = 0,
   } = config
 
@@ -217,7 +218,7 @@ export function createBacktestEngine(config = {}) {
   }
 
   function evaluateBar(i, candles, indicators, signalFn) {
-    if (i < 10) return null
+    if (i < 100) return null  // warmup — need history for sequential state
     const c = candles[i]
 
     // ── In position ───────────────────────────────────────────────
@@ -292,9 +293,15 @@ export function createBacktestEngine(config = {}) {
       const fvgB = seqIndicators.bullishFVG?.[i]||seqIndicators.bullishFVG?.[i-1]||seqIndicators.bullishFVG?.[i-2]||seqIndicators.bullishFVG?.[i-3]||seqIndicators.bullishFVG?.[i-4]||seqIndicators.bullishFVG?.[i-5]
       const obB  = seqIndicators.rejectionBlockBullish?.[i]||seqIndicators.rejectionBlockBullish?.[i-1]||seqIndicators.rejectionBlockBullish?.[i-2]||seqIndicators.rejectionBlockBullish?.[i-3]
       const cisdB = seqIndicators.cisdBullish?.[i]||seqIndicators.cisdBullish?.[i-1]||seqIndicators.cisdBullish?.[i-2]
-      if (fvgB || obB || cisdB) {
+      // Grade the setup — more confluence = higher score
+      const seqScore = 2                      // sweep (always true here)
+                     + 2                      // BOS after sweep (always true here)
+                     + (fvgB  ? 2 : 0)        // FVG is the strongest POI
+                     + (obB   ? 1 : 0)        // rejection block
+                     + (cisdB ? 1 : 0)        // change in state of delivery
+      if ((fvgB || obB || cisdB) && seqScore >= minScore) {
         isBuy = true
-        result = { action: 'buy', reason: 'Sweep→BOS→POI', score: 6, factors: { liquiditySweep: true, bos: true, fvg: Boolean(fvgB), ob: Boolean(obB), cisd: Boolean(cisdB) } }
+        result = { action: 'buy', reason: `Sweep→BOS→POI (score ${seqScore})`, score: seqScore, factors: { liquiditySweep: true, bos: true, fvg: Boolean(fvgB), ob: Boolean(obB), cisd: Boolean(cisdB) } }
       }
     }
     const isSell = false  // longs only mode

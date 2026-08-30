@@ -158,7 +158,7 @@ export function createBacktestEngine(config = {}) {
     stopLookback         = 30,
     useLearning          = true,
     learningMinSample    = 8,
-    minScore             = 5,   // A+ filter: 5=normal, 6=strong, 7=A+ only
+    minScore             = 7,   // A+ filter: 5=normal, 6=strong, 7=A+ only
     learningExpectancyFloor = 0,
   } = config
 
@@ -304,21 +304,13 @@ export function createBacktestEngine(config = {}) {
       const fvgB = seqIndicators.bullishFVG?.[i]||seqIndicators.bullishFVG?.[i-1]||seqIndicators.bullishFVG?.[i-2]||seqIndicators.bullishFVG?.[i-3]||seqIndicators.bullishFVG?.[i-4]||seqIndicators.bullishFVG?.[i-5]
       const obB  = seqIndicators.rejectionBlockBullish?.[i]||seqIndicators.rejectionBlockBullish?.[i-1]||seqIndicators.rejectionBlockBullish?.[i-2]||seqIndicators.rejectionBlockBullish?.[i-3]
       const cisdB = seqIndicators.cisdBullish?.[i]||seqIndicators.cisdBullish?.[i-1]||seqIndicators.cisdBullish?.[i-2]
-      // Regime filter — skip trending_down entirely (bullish reversal strategy
-      // fighting a downtrend is structurally misaligned: ~35% win rate vs ~46% elsewhere)
-      const regimeNow = detectRegime(candles, i)
-      const regimeOK  = regimeNow !== 'trending_down'
-
-      // Fix 4: in trending_up, require FVG specifically (ob-only entries underperform)
-      const poiOK = regimeNow === 'trending_up' ? Boolean(fvgB) : (fvgB || obB || cisdB)
-
       // Grade the setup — more confluence = higher score
       const seqScore = 2                      // sweep (always true here)
                      + 2                      // BOS after sweep (always true here)
                      + (fvgB  ? 2 : 0)        // FVG is the strongest POI
                      + (obB   ? 1 : 0)        // rejection block
                      + (cisdB ? 1 : 0)        // change in state of delivery
-      if (regimeOK && poiOK && seqScore >= minScore) {
+      if ((fvgB || obB || cisdB) && seqScore >= minScore) {
         isBuy = true
         result = { action: 'buy', reason: `Sweep→BOS→POI (score ${seqScore})`, score: seqScore, factors: { liquiditySweep: true, bos: true, fvg: Boolean(fvgB), ob: Boolean(obB), cisd: Boolean(cisdB) } }
       }

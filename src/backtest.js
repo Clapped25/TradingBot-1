@@ -158,7 +158,7 @@ export function createBacktestEngine(config = {}) {
     stopLookback         = 30,
     useLearning          = true,
     learningMinSample    = 8,
-    minScore             = 7,   // A+ filter: 5=normal, 6=strong, 7=A+ only
+    minScore             = 5,   // A+ filter: 5=normal, 6=strong, 7=A+ only -- reverted for baseline test
     learningExpectancyFloor = 0,
   } = config
 
@@ -180,8 +180,8 @@ export function createBacktestEngine(config = {}) {
   let bosSeenAt    = -Infinity  // bar index when BOS happened after sweep
   let lossStreak   = 0          // consecutive losses (Fix 5)
   let streakCooldownUntil = -Infinity  // bar index until which entries are blocked
-  const sweepWindow = 10        // sweep valid for 10 bars (tightened from 20/12)
-  const bosWindow   = 8         // BOS must occur within 8 bars of the sweep
+  const sweepWindow = 12        // sweep valid for 12 bars (60 min) -- reverted for baseline test
+  const bosWindow   = 8         // BOS valid for 8 bars after sweep
 
   function closeTrade(i, candles, exitPrice, reason) {
     const entry     = trades[trades.length - 1]

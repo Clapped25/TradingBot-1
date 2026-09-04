@@ -429,6 +429,8 @@ function runEngine(candles, signalFn) {
           grossPnl: +grossPnl.toFixed(2), commission: +commission.toFixed(2),
           dollarPnl: +dollarPnl.toFixed(2), rMult, reason, barsHeld: barsOpen,
           time: candles[entryIdx].time,
+          exitTime: c.time,
+          session: getSession(candles[entryIdx].time),
         })
         pos = null; lastExitIdx = i
       }
@@ -486,6 +488,45 @@ function summarize(trades) {
 
 function passesBar(stats) {
   return stats.trades >= PASS_BAR.minTrades && stats.expectancyR >= PASS_BAR.minExpectancyR
+}
+
+// ── Raw trade export ──────────────────────────────────────────────
+// For bottom-up pattern hunting: every hypothesis tested so far was built
+// top-down (from a video or a general theory) and none survived contact
+// with honest out-of-sample testing. Looking at actual individual trades
+// by hand — not just aggregated stats — is the next real step: hunting
+// for something specific that predicts win vs loss, the way a real edge
+// is usually found, rather than generating another top-down hypothesis.
+function tradesToCSV(trades) {
+  const headers = ['entryTime', 'exitTime', 'session', 'side', 'entryPrice', 'exitPrice', 'contracts', 'rMult', 'dollarPnl', 'grossPnl', 'commission', 'reason', 'barsHeld']
+  const rows = trades.map((t) => [
+    new Date(t.time).toISOString(),
+    new Date(t.exitTime).toISOString(),
+    t.session,
+    t.side,
+    t.entryPrice.toFixed(2),
+    t.exitPrice.toFixed(2),
+    t.contracts,
+    t.rMult.toFixed(3),
+    t.dollarPnl.toFixed(2),
+    t.grossPnl.toFixed(2),
+    t.commission.toFixed(2),
+    t.reason,
+    t.barsHeld,
+  ].join(','))
+  return [headers.join(','), ...rows].join('\n')
+}
+
+function downloadCSV(filename, csvString) {
+  const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
 
 // ── UI ────────────────────────────────────────────────────────────
@@ -605,6 +646,19 @@ function SessionBreakdown({ bySession, label }) {
   )
 }
 
+function DownloadButton({ trades, filename, label }) {
+  if (!trades || !trades.length) return null
+  return (
+    <button
+      className="btn-sm"
+      onClick={() => downloadCSV(filename, tradesToCSV(trades))}
+      style={{ fontSize: 11, padding: '4px 10px', marginTop: 8, marginRight: 6 }}
+    >
+      \u2b07 {label} ({trades.length} trades)
+    </button>
+  )
+}
+
 function GapWarning({ gaps }) {
   if (!gaps.length) return null
   return (
@@ -686,25 +740,29 @@ export default function HypothesisLab() {
         let testStats = null
         let validateBlocked = 0
         let testBlocked = 0
+        let validateTrades = []
+        let testTrades = []
         if (passesBar(trainStats)) {
           if (validateCandles.length) {
             const vFn = hyp.makeSignal(validateCandles)
             const vResult = runEngine(validateCandles, vFn)
             validateStats = summarize(vResult.trades)
             validateBlocked = vResult.blockedByPolicy
+            validateTrades = vResult.trades
           }
           if (testCandles.length && (!validateCandles.length || passesBar(validateStats))) {
             const tFn = hyp.makeSignal(testCandles)
             const tResult = runEngine(testCandles, tFn)
             testStats = summarize(tResult.trades)
             testBlocked = tResult.blockedByPolicy
+            testTrades = tResult.trades
           }
         }
 
         out[hyp.id] = {
-          train: trainStats, trainBySession, trainBlocked,
-          validate: validateStats, validateBlocked,
-          test: testStats, testBlocked,
+          train: trainStats, trainBySession, trainBlocked, trainTrades,
+          validate: validateStats, validateBlocked, validateTrades,
+          test: testStats, testBlocked, testTrades,
         }
       }
       setResults(out)
@@ -750,7 +808,7 @@ export default function HypothesisLab() {
         const stitchedBySession = summarizeBySession(stitchedTrades)
         const monthsWithTrades = perMonth.filter((p) => p.stats && p.stats.trades > 0)
         const profitableCount = monthsWithTrades.filter((p) => p.stats.totalDollar > 0).length
-        out[hyp.id] = { perMonth, stitched, stitchedBySession, profitableCount, totalCount: monthsWithTrades.length, totalBlocked }
+        out[hyp.id] = { perMonth, stitched, stitchedBySession, stitchedTrades, profitableCount, totalCount: monthsWithTrades.length, totalBlocked }
       }
       setWfResults(out)
     } catch (e) {
@@ -841,6 +899,11 @@ export default function HypothesisLab() {
                 Train {r.trainBlocked}{r.validate ? `, Validate ${r.validateBlocked}` : ''}{r.test ? `, Test ${r.testBlocked}` : ''}
               </p>
             ) : null}
+            <div style={{ marginTop: 4 }}>
+              <DownloadButton trades={r.trainTrades} filename={`${hyp.id}_train.csv`} label="Train CSV" />
+              <DownloadButton trades={r.validateTrades} filename={`${hyp.id}_validate.csv`} label="Validate CSV" />
+              <DownloadButton trades={r.testTrades} filename={`${hyp.id}_test.csv`} label="Test CSV" />
+            </div>
           </div>
         )
       })}
@@ -916,6 +979,9 @@ export default function HypothesisLab() {
                 Blocked by Decision Policy across all months: {r.totalBlocked}
               </p>
             )}
+            <div style={{ marginTop: 4 }}>
+              <DownloadButton trades={r.stitchedTrades} filename={`${hyp.id}_walkforward_stitched.csv`} label="Stitched CSV" />
+            </div>
           </div>
         )
       })}

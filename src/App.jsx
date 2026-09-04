@@ -129,6 +129,10 @@ export default function App() {
           <LearningDashboard onBack={() => setScreen(prevScreen)} />
         )}
 
+                {screen === 'lab' && (
+          <HypothesisLab />
+        )}
+
         {screen === 'input' && (
           <StrategyInput
             onStrategyExtracted={handleStrategyExtracted}

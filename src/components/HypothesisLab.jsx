@@ -274,6 +274,26 @@ const HYPOTHESES = [
     },
   },
   {
+    id: 'h5b_ema_pullback_offhours',
+    name: 'H5b — EMA Stack Pullback, Offhours only',
+    description: 'Identical entry rule to H5, restricted to the Offhours bucket (04:00–07:00, 12:00–13:00, 21:00–23:00 UTC) — the one session where H5 showed a consistent edge on BOTH Train and walk-forward. Tested as its own hypothesis, not assumed.',
+    makeSignal: (candles) => {
+      const ema9  = calcEMASeries(candles, 9)
+      const ema21 = calcEMASeries(candles, 21)
+      const ema50 = calcEMASeries(candles, 50)
+      return (i) => {
+        if (getSession(candles[i].time) !== 'Offhours') return 'none'
+        if (ema50[i] == null) return 'none'
+        const bull = ema9[i] > ema21[i] && ema21[i] > ema50[i]
+        const bear = ema9[i] < ema21[i] && ema21[i] < ema50[i]
+        const c = candles[i]
+        if (bull && c.low  <= ema21[i] && c.close > ema21[i]) return 'buy'
+        if (bear && c.high >= ema21[i] && c.close < ema21[i]) return 'sell'
+        return 'none'
+      }
+    },
+  },
+  {
     id: 'h6_vwap_reversion',
     name: 'H6 — VWAP Mean Reversion',
     description: 'Price > 2\u00d7ATR from session VWAP \u2192 fade back toward it. Skipped automatically if candles have no volume data.',

@@ -347,6 +347,31 @@ const HYPOTHESES = [
       }
     },
   },
+  {
+    id: 'h7b_amd_london_only',
+    name: 'H7b — AMD: Asian Range \u2192 London Sweep, London only',
+    description: 'Identical entry rule to H7, restricted to the London session (07:00\u201312:00 UTC) for the sweep/reversal entry \u2014 the session where H7 showed a consistent edge on BOTH Train and walk-forward. Tested as its own hypothesis, not assumed.',
+    makeSignal: (candles) => {
+      let day = null, asianHigh = -Infinity, asianLow = Infinity, fired = false
+      return (i) => {
+        const c = candles[i]
+        const d = dayKey(c.time)
+        if (d !== day) { day = d; asianHigh = -Infinity; asianLow = Infinity; fired = false }
+        const h = utcHour(c.time)
+        const inAsian = h >= 23 || h < 4
+        if (inAsian) {
+          asianHigh = Math.max(asianHigh, c.high)
+          asianLow  = Math.min(asianLow, c.low)
+          return 'none'
+        }
+        if (asianHigh === -Infinity || fired) return 'none'
+        if (getSession(c.time) !== 'London') return 'none'
+        if (c.low  < asianLow  && c.close > asianLow)  { fired = true; return 'buy' }
+        if (c.high > asianHigh && c.close < asianHigh) { fired = true; return 'sell' }
+        return 'none'
+      }
+    },
+  },
 ]
 
 // ── Minimal engine — fresh, not shared with backtest.js ─────────────

@@ -4,6 +4,7 @@ import StrategyReview from './components/StrategyReview'
 import BacktestResults from './components/BacktestResults'
 import LearningDashboard from './components/LearningDashboard'
 import LiveMode from './components/LiveMode'
+import LiveMode from './components/LiveMode'
 import { updateStrategy, listStrategiesAsync } from './strategyStorage'
 import { syncFromSupabase } from './paperBroker'
 import { syncMemoryFromSupabase } from './tradeMemory'
@@ -34,6 +35,7 @@ export default function App() {
   const screenIdx = SCREENS.indexOf(screen)
   const isDashboard = screen === 'dashboard'
   const isLive      = screen === 'live'
+  const isLab        = screen === 'lab'
 
   function handleStrategyExtracted(s, id) {
     setStrategy(s); setStrategyId(id); setScreen('review')
@@ -90,13 +92,33 @@ export default function App() {
             </span>
           )}
 
-          {!isLive && (
+                    {!isLive && (
             <button
               className="btn-sm"
               style={{ marginLeft: 'auto', flexShrink: 0 }}
               onClick={isDashboard ? () => setScreen(prevScreen) : openDashboard}
             >
               {isDashboard ? '← Back' : '📊 Learning'}
+            </button>
+          )}
+
+          {!isLive && !isLab && (
+            <button
+              className="btn-sm"
+              style={{ flexShrink: 0 }}
+              onClick={() => { setPrevScreen(screen); setScreen('lab') }}
+            >
+              🧪 Lab
+            </button>
+          )}
+
+          {isLab && (
+            <button
+              className="btn-sm"
+              style={{ marginLeft: 'auto', flexShrink: 0 }}
+              onClick={() => setScreen(prevScreen)}
+            >
+              ← Back
             </button>
           )}
         </div>

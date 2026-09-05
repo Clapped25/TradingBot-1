@@ -241,6 +241,17 @@ const HYPOTHESES = [
     },
   },
   {
+    id: 'h3c_momentum_atr_floor',
+    name: 'H3c — Momentum, ATR floor (>33pts)',
+    description: 'Identical entry rule to H3a, gated to only fire when ATR(14) at entry exceeds ~33 points — the exact boundary where this Lab\'s own $500-cap sizing formula switches from 5-6 contracts to 4 or fewer. A bottom-up review of H3a\'s real trade output found the 5-6-contract regime (low ATR) lost $45,765 across 1,124 trades while the 1-4-contract regime (higher ATR) made +$22,130 across 280 trades — not a coincidence, since low ATR IS what forces the sizing formula to the cap. Tests whether that is a genuine volatility-regime effect on the entry itself, not just an artifact of position sizing.',
+    makeSignal: (candles) => (i) => {
+      if (i < 20) return 'none'
+      const atr = calcATR(candles, i)
+      if (atr <= 33.33) return 'none'
+      return baselineMomentum(candles, i)
+    },
+  },
+  {
     id: 'h4_gap_fade',
     name: 'H4 — Gap Fade',
     description: 'First bar of a new day: if open gaps > 1.5\u00d7ATR from prior close, fade back toward it.',

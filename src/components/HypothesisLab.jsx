@@ -236,6 +236,36 @@ const HYPOTHESES = [
     },
   },
   {
+    id: 'h2c_sweep_trend_aligned',
+    name: 'H2c — PDH/PDL Sweep, Trend-Aligned',
+    description: 'Identical event to H2, but only takes the trade when its direction agrees with the prevailing trend at that moment (5-bar % change of 20-SMA): bullish sweep only taken during an uptrend, bearish sweep only taken during a downtrend. Built from the Event Context Explorer\u0027s trend-steepness breakdown on H2\u0027s own event \u2014 steepest-downtrend quintile was significantly negative (CI cleared zero), steepest-uptrend quintile was the only positive mean in that table. Tests the direction-aware version of that finding, not a single arbitrary bucket.',
+    makeSignal: (candles) => {
+      const sma20 = calcSMASeries(candles, 20)
+      let curDay = null, curHigh = null, curLow = null, pdh = null, pdl = null
+      return (i) => {
+        const c = candles[i]
+        const d = dayKey(c.time)
+        if (d !== curDay) {
+          if (curDay !== null) { pdh = curHigh; pdl = curLow }
+          curDay = d; curHigh = c.high; curLow = c.low
+        } else {
+          curHigh = Math.max(curHigh, c.high)
+          curLow  = Math.min(curLow, c.low)
+        }
+        if (pdh == null || pdl == null) return 'none'
+
+        let trendSteepness = 0
+        if (i >= 5 && sma20[i] != null && sma20[i - 5] != null && sma20[i - 5] !== 0) {
+          trendSteepness = (sma20[i] - sma20[i - 5]) / sma20[i - 5]
+        }
+
+        if (c.low  < pdl && c.close > pdl && trendSteepness > 0) return 'buy'
+        if (c.high > pdh && c.close < pdh && trendSteepness < 0) return 'sell'
+        return 'none'
+      }
+    },
+  },
+  {
     id: 'h3a_momentum_any',
     name: 'H3a — Momentum baseline (any time)',
     description: 'Simple 2-bar momentum entry, no time restriction. Baseline to compare H3b against — tests whether session alone changes the result.',

@@ -158,6 +158,17 @@ function calcEMASeries(candles, period) {
   return out
 }
 
+function calcSMASeries(candles, period) {
+  const out = new Array(candles.length).fill(null)
+  let sum = 0
+  for (let i = 0; i < candles.length; i++) {
+    sum += candles[i].close
+    if (i >= period) sum -= candles[i - period].close
+    if (i >= period - 1) out[i] = sum / period
+  }
+  return out
+}
+
 const utcHour   = (t) => new Date(t).getUTCHours()
 const utcMinute = (t) => new Date(t).getUTCMinutes()
 const dayKey    = (t) => new Date(t).toISOString().slice(0, 10)
@@ -384,6 +395,167 @@ const HYPOTHESES = [
     },
   },
 ]
+
+// ── Event Context Explorer ───────────────────────────────────────
+// A different tool from the hypothesis tester above, on purpose. Every
+// hypothesis (H1-H3c) fused "is this bar worth studying" and "should I
+// trade it" into one rule, then tested that fused rule directly — which
+// is why session/ATR narrowing after the fact (H5b, H7b, H3c) kept
+// producing the same Train-looks-good-walk-forward-fails pattern: a single
+// binary split chosen by looking at which subset performed best is close
+// to picking the answer before running the experiment.
+//
+// This tool keeps three things explicitly separate, the way real feature
+// engineering does:
+//   1. EVENT  — just a timestamp flag ("this bar is worth studying"),
+//      not a trade decision. Uses the same PDH/PDL sweep as H2, but
+//      detected on its own with no entry logic attached.
+//   2. CONTEXTUAL FEATURES — continuous, measured variables that might
+//      explain why the same event produces different outcomes at
+//      different times. The three built in here are exactly the ones a
+//      trader's "discretion" usually already weighs without naming them:
+//      recent range (ATR), wick size on the event candle, and trend
+//      steepness (normalized moving-average slope). The point of this
+//      tool is to quantify those instead of trusting the gut feeling.
+//   3. OUTCOME — the same double-barrier method (ATR-based stop/target,
+//      same friction model) used everywhere else in this Lab.
+//
+// The output is a full quantile breakdown per feature — 5 buckets, each
+// with sample size, mean R, and a 95% confidence interval — not a single
+// chosen threshold. A real contextual relationship should show buckets
+// separating with non-overlapping (or clearly trending) confidence
+// intervals across a reasonable sample size per bucket. One bucket
+// looking best is not evidence on its own — that is exactly the mistake
+// that broke H7b: London looked like the standout bucket in one Train
+// run and failed to hold up walk-forward.
+
+function detectSweepEvents(candles) {
+  const events = []
+  let curDay = null, curHigh = null, curLow = null, pdh = null, pdl = null
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i]
+    const d = dayKey(c.time)
+    if (d !== curDay) {
+      if (curDay !== null) { pdh = curHigh; pdl = curLow }
+      curDay = d; curHigh = c.high; curLow = c.low
+    } else {
+      curHigh = Math.max(curHigh, c.high)
+      curLow  = Math.min(curLow, c.low)
+    }
+    if (pdh == null || pdl == null) continue
+    if (c.low  < pdl && c.close > pdl) events.push({ idx: i, direction: 'bullish' })
+    if (c.high > pdh && c.close < pdh) events.push({ idx: i, direction: 'bearish' })
+  }
+  return events
+}
+
+function contextualFeatures(candles, sma20, idx, direction) {
+  const c = candles[idx]
+  const recentRange = calcATR(candles, idx) // "recent range"
+
+  const range = c.high - c.low
+  let wickSize
+  if (direction === 'bullish') {
+    const lowerWick = Math.min(c.open, c.close) - c.low
+    wickSize = range > 0 ? lowerWick / range : 0
+  } else {
+    const upperWick = c.high - Math.max(c.open, c.close)
+    wickSize = range > 0 ? upperWick / range : 0
+  }
+
+  // Trend steepness: normalized 5-bar rate of change of a 20-SMA, in
+  // percentage terms so it stays scale-free across different price levels
+  // (a raw dollar slope would look different on NQ at 15,000 vs 22,000).
+  let trendSteepness = 0
+  if (idx >= 5 && sma20[idx] != null && sma20[idx - 5] != null && sma20[idx - 5] !== 0) {
+    trendSteepness = (sma20[idx] - sma20[idx - 5]) / sma20[idx - 5]
+  }
+
+  return { recentRange, wickSize, trendSteepness }
+}
+
+function simulateEventOutcome(candles, eventIdx, direction) {
+  const side = direction === 'bullish' ? 'long' : 'short'
+  const atr  = calcATR(candles, eventIdx)
+  const dist = atr * STOP_ATR_MULT
+  if (dist <= 0) return null
+  const rawEntry   = candles[eventIdx].close
+  const entryPrice = slip(rawEntry, side === 'long', SLIPPAGE_ENTRY_TICKS)
+  const stopPrice   = side === 'long' ? entryPrice - dist : entryPrice + dist
+  const targetPrice = side === 'long' ? entryPrice + dist * R_MULTIPLE : entryPrice - dist * R_MULTIPLE
+
+  for (let i = eventIdx + 1; i < Math.min(candles.length, eventIdx + 1 + MAX_HOLD_BARS); i++) {
+    const c = candles[i]
+    let rawExit = null, exitIsBuy = null
+    if (side === 'long') {
+      if (c.low <= stopPrice)        { rawExit = stopPrice;   exitIsBuy = false }
+      else if (c.high >= targetPrice) { rawExit = targetPrice; exitIsBuy = false }
+    } else {
+      if (c.high >= stopPrice)       { rawExit = stopPrice;   exitIsBuy = true }
+      else if (c.low <= targetPrice)  { rawExit = targetPrice; exitIsBuy = true }
+    }
+    if (rawExit != null) {
+      const slipTicks = rawExit === stopPrice ? SLIPPAGE_STOP_TICKS : SLIPPAGE_TARGET_TICKS
+      const exitPrice = slip(rawExit, exitIsBuy, slipTicks)
+      const dir = side === 'long' ? 1 : -1
+      const stopDist = Math.abs(entryPrice - stopPrice)
+      const contracts = stopDist > 0
+        ? Math.max(1, Math.min(6, Math.floor(MAX_LOSS_DOLLARS / (stopDist * POINT_VALUE))))
+        : 1
+      const grossPnl   = dir * (exitPrice - entryPrice) * POINT_VALUE * contracts
+      const commission = COMMISSION_PER_SIDE * 2 * contracts
+      const dollarPnl  = grossPnl - commission
+      const rMult      = stopDist > 0 ? dir * (exitPrice - entryPrice) / stopDist : 0
+      return { rMult, dollarPnl }
+    }
+  }
+  return null // neither barrier hit within MAX_HOLD_BARS
+}
+
+function quantileBuckets(items, valueKey, k = 5) {
+  const sorted   = [...items].sort((a, b) => a[valueKey] - b[valueKey])
+  const bucketed = Array.from({ length: k }, () => [])
+  sorted.forEach((item, i) => {
+    const bucketIdx = Math.min(k - 1, Math.floor((i / sorted.length) * k))
+    bucketed[bucketIdx].push(item)
+  })
+  return bucketed.map((bucket) => {
+    const n = bucket.length
+    if (n === 0) return { n: 0, meanR: 0, ci95: 0, lower: 0, upper: 0, totalDollar: 0, featureRange: [0, 0] }
+    const rMults    = bucket.map((b) => b.outcome.rMult)
+    const mean      = rMults.reduce((a, b) => a + b, 0) / n
+    const variance  = n > 1 ? rMults.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1) : 0
+    const se        = Math.sqrt(variance / n)
+    const ci95      = 1.96 * se
+    const totalDollar = bucket.reduce((a, b) => a + b.outcome.dollarPnl, 0)
+    const featureVals = bucket.map((b) => b[valueKey])
+    return {
+      n, meanR: +mean.toFixed(3), ci95: +ci95.toFixed(3),
+      lower: +(mean - ci95).toFixed(3), upper: +(mean + ci95).toFixed(3),
+      totalDollar: +totalDollar.toFixed(0),
+      featureRange: [+Math.min(...featureVals).toFixed(4), +Math.max(...featureVals).toFixed(4)],
+    }
+  })
+}
+
+function runContextExplorer(candles) {
+  const sma20 = calcSMASeries(candles, 20)
+  const events = detectSweepEvents(candles)
+  const withOutcomes = []
+  for (const ev of events) {
+    const outcome = simulateEventOutcome(candles, ev.idx, ev.direction)
+    if (!outcome) continue
+    const features = contextualFeatures(candles, sma20, ev.idx, ev.direction)
+    withOutcomes.push({ ...features, outcome })
+  }
+  return {
+    totalEvents: events.length,
+    resolvedEvents: withOutcomes.length,
+    byRecentRange: quantileBuckets(withOutcomes, 'recentRange'),
+    byWickSize: quantileBuckets(withOutcomes, 'wickSize'),
+    byTrendSteepness: quantileBuckets(withOutcomes, 'trendSteepness'),
+  }
+}
 
 // ── Minimal engine — fresh, not shared with backtest.js ─────────────
 // Every fill below goes through slip() and every closed trade pays
@@ -670,6 +842,43 @@ function DownloadButton({ trades, filename, label }) {
   )
 }
 
+function FeatureBucketTable({ title, buckets, unit }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4 }}>{title}</div>
+      <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ color: 'var(--text-dim)', textAlign: 'right' }}>
+            <th style={{ textAlign: 'left', padding: '3px 6px' }}>Quintile (low\u2192high)</th>
+            <th style={{ padding: '3px 6px' }}>n</th>
+            <th style={{ padding: '3px 6px' }}>Mean R</th>
+            <th style={{ padding: '3px 6px' }}>95% CI</th>
+            <th style={{ padding: '3px 6px' }}>P&amp;L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {buckets.map((b, i) => {
+            const ciCrossesZero = b.lower < 0 && b.upper > 0
+            return (
+              <tr key={i}>
+                <td style={{ padding: '3px 6px' }}>Q{i + 1} ({b.featureRange[0]}{unit}\u2013{b.featureRange[1]}{unit})</td>
+                <td style={{ padding: '3px 6px', textAlign: 'right' }}>{b.n}</td>
+                <td style={{ padding: '3px 6px', textAlign: 'right' }}>{b.meanR >= 0 ? '+' : ''}{b.meanR}R</td>
+                <td style={{ padding: '3px 6px', textAlign: 'right', color: ciCrossesZero ? 'var(--text-dim)' : (b.lower > 0 ? 'var(--green)' : 'var(--red)') }}>
+                  [{b.lower}, {b.upper}]
+                </td>
+                <td style={{ padding: '3px 6px', textAlign: 'right', color: b.totalDollar > 0 ? 'var(--green)' : b.totalDollar < 0 ? 'var(--red)' : 'var(--text-muted)' }}>
+                  {b.totalDollar >= 0 ? '+' : ''}\${b.totalDollar}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function GapWarning({ gaps }) {
   if (!gaps.length) return null
   return (
@@ -702,6 +911,12 @@ export default function HypothesisLab() {
   const [wfLoadMsg, setWfLoadMsg]   = useState('')
   const [wfError, setWfError]       = useState('')
   const [wfResults, setWfResults]   = useState(null) // { [hypId]: { perMonth, stitched, stitchedBySession, profitableCount, totalCount } }
+
+  const [ceMonths, setCeMonths]     = useState([])
+  const [ceRunning, setCeRunning]   = useState(false)
+  const [ceLoadMsg, setCeLoadMsg]   = useState('')
+  const [ceError, setCeError]       = useState('')
+  const [ceResults, setCeResults]   = useState(null) // { totalEvents, resolvedEvents, byRecentRange, byWickSize, byTrendSteepness }
 
   const usedKeys = new Set([...trainMonths, ...validateMonths, ...testMonths].map((m) => m.key))
 
@@ -827,6 +1042,25 @@ export default function HypothesisLab() {
     } finally {
       setWfRunning(false)
       setWfLoadMsg('')
+    }
+  }
+
+  async function runContextExplorerUI() {
+    if (!ceMonths.length) { setCeError('Select at least one month.'); return }
+    setCeError('')
+    setCeRunning(true)
+    setCeResults(null)
+    try {
+      setCeLoadMsg('Fetching candles\u2026')
+      const candles = await fetchSelectedMonths(SYMBOL, '5min', [...ceMonths].sort((a, b) => a.key.localeCompare(b.key)))
+      setCeLoadMsg('Detecting events and computing contextual features\u2026')
+      const result = runContextExplorer(candles)
+      setCeResults(result)
+    } catch (e) {
+      setCeError(e.message)
+    } finally {
+      setCeRunning(false)
+      setCeLoadMsg('')
     }
   }
 
@@ -996,6 +1230,42 @@ export default function HypothesisLab() {
           </div>
         )
       })}
+
+      <div className="card" style={{ marginTop: 20 }}>
+        <div className="card-title">3. Event Context Explorer</div>
+        <p style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.6 }}>
+          Separates the event (PDH/PDL sweep, same as H2 — just a timestamp flag, no entry decision)
+          from contextual features that might explain why the same event produces different outcomes at
+          different times: recent range (ATR), wick size on the event candle, and trend steepness (normalized
+          20-SMA slope). These are exactly the things discretion usually weighs without naming — this
+          quantifies them instead. Full quintile breakdown with 95% confidence intervals, not a single chosen
+          threshold. A real relationship shows buckets separating with non-overlapping or clearly trending
+          intervals across a real sample size — one bucket looking best on its own is not evidence; that
+          exact pattern is what broke H7b.
+        </p>
+      </div>
+
+      <MonthPicker label="Context Explorer months" selected={ceMonths} onToggle={toggle(setCeMonths)} />
+
+      {ceError && <div className="error-box">{ceError}</div>}
+
+      <div className="row" style={{ marginTop: 4, marginBottom: 12 }}>
+        <button className="btn-green" onClick={runContextExplorerUI} disabled={ceRunning} style={{ flex: 1, padding: '11px' }}>
+          {ceRunning ? `\u23f3 ${ceLoadMsg}` : '\u25b6 Run Context Explorer'}
+        </button>
+      </div>
+
+      {ceResults && (
+        <div className="card">
+          <div className="card-title">PDH/PDL Sweep \u2014 Contextual Breakdown</div>
+          <p style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 12 }}>
+            {ceResults.totalEvents} events detected, {ceResults.resolvedEvents} resolved within {MAX_HOLD_BARS} bars.
+          </p>
+          <FeatureBucketTable title="By recent range (ATR at event, points)" buckets={ceResults.byRecentRange} unit="pt" />
+          <FeatureBucketTable title="By wick size (fraction of candle range)" buckets={ceResults.byWickSize} unit="" />
+          <FeatureBucketTable title="By trend steepness (5-bar % change of 20-SMA)" buckets={ceResults.byTrendSteepness} unit="" />
+        </div>
+      )}
     </div>
   )
 }

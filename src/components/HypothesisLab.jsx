@@ -568,6 +568,57 @@ function quantileBuckets(items, valueKey, k = 5) {
   })
 }
 
+function median(arr) {
+  const sorted = [...arr].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
+// Joint (multivariate) breakdown — the univariate tables above test one
+// feature at a time, which is exactly the mistake the feature-engineering
+// video's height-prediction analogy warns against ("only asking where
+// someone is from"). A real relationship may only show up in a specific
+// COMBINATION of features, not in any one of them alone — e.g. trend
+// alignment might only matter when volatility is also elevated. This
+// splits each feature at its median (trend at zero, since up/down already
+// has real meaning) and reports all 8 combinations together.
+//
+// Important: 8 buckets from the same data is MORE multiple-comparisons
+// risk than 5 quantiles per feature, not less — with more, smaller cells,
+// it is easier for one to look good by chance. One standout combination
+// here is weaker evidence than a monotonic trend across quantiles was,
+// not stronger — treat any single cell that looks good with real
+// suspicion before building a hypothesis from it.
+function jointBuckets(items) {
+  const atrMedian  = median(items.map((i) => i.recentRange))
+  const wickMedian = median(items.map((i) => i.wickSize))
+  const groups = {}
+  for (const item of items) {
+    const atrLabel   = item.recentRange   >= atrMedian  ? 'High ATR'  : 'Low ATR'
+    const wickLabel  = item.wickSize      >= wickMedian ? 'Big Wick'  : 'Small Wick'
+    const trendLabel = item.trendSteepness >= 0          ? 'Uptrend'   : 'Downtrend'
+    const key = `${trendLabel} / ${atrLabel} / ${wickLabel}`
+    if (!groups[key]) groups[key] = []
+    groups[key].push(item)
+  }
+  const results = Object.entries(groups).map(([label, bucket]) => {
+    const n = bucket.length
+    const rMults   = bucket.map((b) => b.outcome.rMult)
+    const mean     = rMults.reduce((a, b) => a + b, 0) / n
+    const variance = n > 1 ? rMults.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1) : 0
+    const se       = Math.sqrt(variance / n)
+    const ci95     = 1.96 * se
+    const totalDollar = bucket.reduce((a, b) => a + b.outcome.dollarPnl, 0)
+    return {
+      label, n, meanR: +mean.toFixed(3), ci95: +ci95.toFixed(3),
+      lower: +(mean - ci95).toFixed(3), upper: +(mean + ci95).toFixed(3),
+      totalDollar: +totalDollar.toFixed(0),
+    }
+  })
+  results.sort((a, b) => b.meanR - a.meanR)
+  return results
+}
+
 function runContextExplorer(candles) {
   const sma20 = calcSMASeries(candles, 20)
   const events = detectSweepEvents(candles)
@@ -584,6 +635,7 @@ function runContextExplorer(candles) {
     byRecentRange: quantileBuckets(withOutcomes, 'recentRange'),
     byWickSize: quantileBuckets(withOutcomes, 'wickSize'),
     byTrendSteepness: quantileBuckets(withOutcomes, 'trendSteepness'),
+    joint: jointBuckets(withOutcomes),
   }
 }
 
@@ -892,6 +944,50 @@ function FeatureBucketTable({ title, buckets, unit }) {
             return (
               <tr key={i}>
                 <td style={{ padding: '3px 6px' }}>Q{i + 1} ({b.featureRange[0]}{unit}\u2013{b.featureRange[1]}{unit})</td>
+                <td style={{ padding: '3px 6px', textAlign: 'right' }}>{b.n}</td>
+                <td style={{ padding: '3px 6px', textAlign: 'right' }}>{b.meanR >= 0 ? '+' : ''}{b.meanR}R</td>
+                <td style={{ padding: '3px 6px', textAlign: 'right', color: ciCrossesZero ? 'var(--text-dim)' : (b.lower > 0 ? 'var(--green)' : 'var(--red)') }}>
+                  [{b.lower}, {b.upper}]
+                </td>
+                <td style={{ padding: '3px 6px', textAlign: 'right', color: b.totalDollar > 0 ? 'var(--green)' : b.totalDollar < 0 ? 'var(--red)' : 'var(--text-muted)' }}>
+                  {b.totalDollar >= 0 ? '+' : ''}\${b.totalDollar}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function JointBucketTable({ buckets }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4 }}>
+        Joint breakdown (trend \u00d7 ATR \u00d7 wick, sorted best to worst)
+      </div>
+      <p style={{ fontSize: 11, color: 'var(--amber)', marginBottom: 6, lineHeight: 1.5 }}>
+        8 smaller cells from the same data \u2014 more multiple-comparisons risk than the single-feature
+        tables above, not less. One cell looking good here is weaker evidence than a monotonic trend
+        across quantiles, not stronger.
+      </p>
+      <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ color: 'var(--text-dim)', textAlign: 'right' }}>
+            <th style={{ textAlign: 'left', padding: '3px 6px' }}>Combination</th>
+            <th style={{ padding: '3px 6px' }}>n</th>
+            <th style={{ padding: '3px 6px' }}>Mean R</th>
+            <th style={{ padding: '3px 6px' }}>95% CI</th>
+            <th style={{ padding: '3px 6px' }}>P&amp;L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {buckets.map((b, i) => {
+            const ciCrossesZero = b.lower < 0 && b.upper > 0
+            return (
+              <tr key={i}>
+                <td style={{ padding: '3px 6px' }}>{b.label}</td>
                 <td style={{ padding: '3px 6px', textAlign: 'right' }}>{b.n}</td>
                 <td style={{ padding: '3px 6px', textAlign: 'right' }}>{b.meanR >= 0 ? '+' : ''}{b.meanR}R</td>
                 <td style={{ padding: '3px 6px', textAlign: 'right', color: ciCrossesZero ? 'var(--text-dim)' : (b.lower > 0 ? 'var(--green)' : 'var(--red)') }}>
@@ -1294,6 +1390,7 @@ export default function HypothesisLab() {
           <FeatureBucketTable title="By recent range (ATR at event, points)" buckets={ceResults.byRecentRange} unit="pt" />
           <FeatureBucketTable title="By wick size (fraction of candle range)" buckets={ceResults.byWickSize} unit="" />
           <FeatureBucketTable title="By trend steepness (5-bar % change of 20-SMA)" buckets={ceResults.byTrendSteepness} unit="" />
+          <JointBucketTable buckets={ceResults.joint} />
         </div>
       )}
     </div>
